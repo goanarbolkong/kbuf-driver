@@ -56,9 +56,12 @@ static ssize_t kbuf_read(struct file *filp, char __user *ubuf,
 		return -ERESTARTSYS;
 
 	while (kbuf_ring_is_empty(&kbuf)) {
-		mutex_unlock(&kbuf.lock);
-		if (filp->f_flags & O_NONBLOCK)
+		if (filp->f_flags & O_NONBLOCK) {
+			mutex_unlock(&kbuf.lock);
 			return -EAGAIN;
+		}
+		kbuf.read_sleeps++;
+		mutex_unlock(&kbuf.lock);
 		pr_info("kbuf: reader pid=%d sleeping (buffer empty)\n", current->pid);
 		if (wait_event_interruptible(kbuf.read_wq, !kbuf_ring_is_empty(&kbuf)))
 			return -ERESTARTSYS;
@@ -79,16 +82,20 @@ static ssize_t kbuf_write(struct file *filp, const char __user *ubuf,
 {
 	ssize_t ret;
 
-	if (count > KBUF_BUFFER_SIZE)
-		count = KBUF_BUFFER_SIZE;
-
 	if (mutex_lock_interruptible(&kbuf.lock))
 		return -ERESTARTSYS;
 
+	/* Clamp under the lock: buffer_size can change via KBUF_IOCRESIZE. */
+	if (count > kbuf.buffer_size)
+		count = kbuf.buffer_size;
+
 	while (kbuf_ring_is_full(&kbuf)) {
-		mutex_unlock(&kbuf.lock);
-		if (filp->f_flags & O_NONBLOCK)
+		if (filp->f_flags & O_NONBLOCK) {
+			mutex_unlock(&kbuf.lock);
 			return -EAGAIN;
+		}
+		kbuf.write_sleeps++;
+		mutex_unlock(&kbuf.lock);
 		pr_info("kbuf: writer pid=%d sleeping (buffer full)\n", current->pid);
 		if (wait_event_interruptible(kbuf.write_wq, !kbuf_ring_is_full(&kbuf)))
 			return -ERESTARTSYS;
@@ -144,10 +151,25 @@ static int __init kbuf_init(void)
 {
 	int ret;
 
+	/*
+	 * Bring up the ring and synchronisation primitives before the device is
+	 * reachable, so no open/read/write can race an uninitialised state.
+	 */
+	kbuf.num_buffers = KBUF_DEFAULT_NUM_BUFFERS;
+	kbuf.buffer_size = KBUF_DEFAULT_BUFFER_SIZE;
+	kbuf.mode = KBUF_MODE_BLOCKING;
+	kbuf.slots = kbuf_alloc_slots(kbuf.num_buffers, kbuf.buffer_size);
+	if (!kbuf.slots)
+		return -ENOMEM;
+
+	mutex_init(&kbuf.lock);
+	init_waitqueue_head(&kbuf.read_wq);
+	init_waitqueue_head(&kbuf.write_wq);
+
 	ret = alloc_chrdev_region(&kbuf.devno, 0, 1, KBUF_DEVICE_NAME);
 	if (ret < 0) {
 		pr_err("kbuf: alloc_chrdev_region failed (%d)\n", ret);
-		return ret;
+		goto err_region;
 	}
 
 	cdev_init(&kbuf.cdev, &kbuf_fops);
@@ -173,15 +195,11 @@ static int __init kbuf_init(void)
 		goto err_device;
 	}
 
-	mutex_init(&kbuf.lock);
-	init_waitqueue_head(&kbuf.read_wq);
-	init_waitqueue_head(&kbuf.write_wq);
-
 	if (kbuf_proc_register())
 		pr_warn("kbuf: proc_create failed (non-fatal)\n");
 
-	pr_info("kbuf: loaded - /dev/kbuf (major=%d), /proc/kbuf_status\n",
-		MAJOR(kbuf.devno));
+	pr_info("kbuf: loaded - /dev/kbuf (major=%d), %u slots x %u bytes\n",
+		MAJOR(kbuf.devno), kbuf.num_buffers, kbuf.buffer_size);
 	return 0;
 
 err_device:
@@ -190,6 +208,8 @@ err_class:
 	cdev_del(&kbuf.cdev);
 err_cdev:
 	unregister_chrdev_region(kbuf.devno, 1);
+err_region:
+	kbuf_free_slots(kbuf.slots, kbuf.num_buffers);
 	return ret;
 }
 
@@ -200,6 +220,7 @@ static void __exit kbuf_exit(void)
 	class_destroy(kbuf.cls);
 	cdev_del(&kbuf.cdev);
 	unregister_chrdev_region(kbuf.devno, 1);
+	kbuf_free_slots(kbuf.slots, kbuf.num_buffers);
 	pr_info("kbuf: unloaded\n");
 }
 

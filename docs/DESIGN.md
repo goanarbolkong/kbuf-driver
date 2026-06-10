@@ -75,6 +75,45 @@ across an empty → 1-message → full → drained progression, and confirms
 `epoll_wait` reports `EPOLLIN` when data is present. It is self-contained and
 runs unattended under the QEMU harness.
 
+## 4. ioctl UAPI + throughput stats (Phase 3)
+
+**Dynamic geometry.** Supporting `KBUF_IOCRESIZE` forces the ring to be
+heap-allocated: the slot array (`kcalloc`) and each slot's data buffer
+(`kmalloc`) are now allocated at load time from `num_buffers`/`buffer_size`
+fields on the device, bounded by `KBUF_MAX_NUM_BUFFERS` (256) and
+`KBUF_MAX_BUFFER_SIZE` (64 KiB). The fixed `[8][4096]` arrays are gone. Init
+allocates the ring and the mutex/wait queues *before* `cdev_add`, so the device
+is never reachable in a half-initialised state (a latent bug in the v1 ordering,
+which called `mutex_init` after `device_create`).
+
+**Resize policy: reject unless empty (`-EBUSY`).** When a resize is requested on
+a non-empty ring, the call fails with `-EBUSY` rather than silently dropping or
+truncating queued messages. This is the only policy that never loses data the
+caller hasn't acknowledged; the caller drains and retries. The new slot array is
+allocated *before* taking the lock, so the mutex is held only for the pointer
+swap (not the allocation); the old array is freed after unlocking. Alternatives
+considered: drain-then-resize (silent data loss) and preserve-as-much-as-fits
+(surprising partial loss, and complex to copy across differing geometries).
+
+**Reset semantics (`KBUF_IOCRESET`).** Zeroes the throughput counters and sets
+`peak_count` to the current depth. It does *not* discard queued data — "reset
+the statistics", not "flush the ring" — so it is safe to call on a live device.
+
+**Stats are lifetime-cumulative and device-global.** Counters
+(`bytes/msgs_produced/consumed`, `read/write_sleeps`, `peak_count`) live on the
+device, updated under the same mutex as the ring, and persist across open/close.
+They are surfaced both via `KBUF_IOCGSTATS` and the enriched `/proc/kbuf_status`.
+
+**Mode (`KBUF_IOCSMODE`).** Validates the argument and stores it, but only
+`KBUF_MODE_BLOCKING` is implemented; `KBUF_MODE_SPSC` returns `-EOPNOTSUPP`
+until the lock-free path lands in Phase 5. Honest stub over a silent no-op.
+
+**Test.** `tests/test_ioctl.c` covers GSTATS accounting across a known
+produce/consume, RESET, RESIZE (empty OK / non-empty `-EBUSY` / bounds
+`-EINVAL`), SMODE validation, and an unknown command (`-ENOTTY`). It restores
+the default 8×4096 geometry and drains before exiting so later tests in the same
+boot see a clean device.
+
 ## Test harness (QEMU)
 
 `scripts/run-qemu.sh` builds a busybox initramfs containing `kbuf.ko` and
@@ -87,9 +126,6 @@ the boot needs a readable kernel image (host `/boot/vmlinuz-*` is typically mode
 
 ## Open questions (to resolve in the phase that needs them)
 
-- **Resize semantics (`KBUF_IOCRESIZE`).** What happens to in-flight data when
-  the ring is resized while non-empty? Candidate policies: reject with `-EBUSY`
-  unless empty; drain-then-resize; preserve as much as fits. To be decided and
-  documented in Phase 4.
 - **Mode switch (`KBUF_IOCSMODE`).** Whether switching between blocking and
   lock-free SPSC mode is allowed with an open ring, or only when idle. Phase 5.
+  (The command and its validation exist now; only the behaviour is deferred.)

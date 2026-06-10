@@ -2,18 +2,56 @@
 /*
  * kbuf_ring.c - circular-buffer core for the kbuf device.
  *
- * Pure ring mechanics: slot copy and index advance. These helpers assume the
- * caller already holds dev->lock and has checked the empty/full predicate, so
- * blocking and wakeup policy stays in kbuf_main.c. copy_to_user/copy_from_user
- * may sleep; that is fine under the mutex but is why this path is not
- * atomic-context safe (see CLAUDE.md / docs/DESIGN.md).
+ * Pure ring mechanics: allocation of the slot array, slot copy, index advance,
+ * and throughput accounting. The consume/produce helpers assume the caller
+ * already holds dev->lock and has checked the empty/full predicate, so blocking
+ * and wakeup policy stays in kbuf_main.c. copy_to_user/copy_from_user may sleep;
+ * that is fine under the mutex but is why this path is not atomic-context safe
+ * (see CLAUDE.md / docs/DESIGN.md).
  */
 #include <linux/kernel.h>
 #include <linux/minmax.h>
 #include <linux/sched.h>
+#include <linux/slab.h>
 #include <linux/uaccess.h>
 
 #include "kbuf_internal.h"
+
+/*
+ * Allocate a slot array and each slot's data buffer. No lock required: the
+ * result is published into a device under dev->lock by the caller.
+ */
+struct kbuf_slot *kbuf_alloc_slots(unsigned int num_buffers, unsigned int buffer_size)
+{
+	struct kbuf_slot *slots;
+	unsigned int i;
+
+	slots = kcalloc(num_buffers, sizeof(*slots), GFP_KERNEL);
+	if (!slots)
+		return NULL;
+
+	for (i = 0; i < num_buffers; i++) {
+		slots[i].data = kmalloc(buffer_size, GFP_KERNEL);
+		if (!slots[i].data) {
+			while (i--)
+				kfree(slots[i].data);
+			kfree(slots);
+			return NULL;
+		}
+	}
+	return slots;
+}
+
+void kbuf_free_slots(struct kbuf_slot *slots, unsigned int num_buffers)
+{
+	unsigned int i;
+
+	if (!slots)
+		return;
+	for (i = 0; i < num_buffers; i++)
+		kfree(slots[i].data);
+	kfree(slots);
+}
 
 bool kbuf_ring_is_empty(const struct kbuf_dev *dev)
 {
@@ -22,7 +60,7 @@ bool kbuf_ring_is_empty(const struct kbuf_dev *dev)
 
 bool kbuf_ring_is_full(const struct kbuf_dev *dev)
 {
-	return dev->count == KBUF_NUM_BUFFERS;
+	return dev->count == dev->num_buffers;
 }
 
 /*
@@ -40,14 +78,16 @@ ssize_t kbuf_ring_consume(struct kbuf_dev *dev, char __user *ubuf, size_t count)
 	pr_info("kbuf: read %zu bytes from slot[%d] (pid=%d)\n",
 		len, dev->read_pos, current->pid);
 
-	dev->read_pos = (dev->read_pos + 1) % KBUF_NUM_BUFFERS;
+	dev->read_pos = (dev->read_pos + 1) % dev->num_buffers;
 	dev->count--;
+	dev->bytes_consumed += len;
+	dev->msgs_consumed++;
 	return (ssize_t)len;
 }
 
 /*
  * Produce one slot from @ubuf. Caller holds dev->lock, guarantees the ring is
- * not full, and has clamped @count to KBUF_BUFFER_SIZE. Returns bytes copied,
+ * not full, and has clamped @count to dev->buffer_size. Returns bytes copied,
  * or -EFAULT.
  */
 ssize_t kbuf_ring_produce(struct kbuf_dev *dev, const char __user *ubuf, size_t count)
@@ -61,7 +101,11 @@ ssize_t kbuf_ring_produce(struct kbuf_dev *dev, const char __user *ubuf, size_t 
 	pr_info("kbuf: wrote %zu bytes to slot[%d] (pid=%d)\n",
 		count, dev->write_pos, current->pid);
 
-	dev->write_pos = (dev->write_pos + 1) % KBUF_NUM_BUFFERS;
+	dev->write_pos = (dev->write_pos + 1) % dev->num_buffers;
 	dev->count++;
+	if (dev->count > dev->peak_count)
+		dev->peak_count = dev->count;
+	dev->bytes_produced += count;
+	dev->msgs_produced++;
 	return (ssize_t)count;
 }

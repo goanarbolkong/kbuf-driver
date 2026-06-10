@@ -13,14 +13,26 @@ static struct proc_dir_entry *kbuf_proc_entry;
 
 static int kbuf_proc_show(struct seq_file *m, void *v)
 {
+	static const char * const mode_name[] = { "blocking", "spsc" };
+
 	mutex_lock(&kbuf.lock);
 	seq_puts(m,    "=== kbuf driver status ===\n");
-	seq_printf(m,  "Total slots    : %d\n", KBUF_NUM_BUFFERS);
-	seq_printf(m,  "Slot size      : %d bytes\n", KBUF_BUFFER_SIZE);
+	seq_printf(m,  "Total slots    : %u\n", kbuf.num_buffers);
+	seq_printf(m,  "Slot size      : %u bytes\n", kbuf.buffer_size);
 	seq_printf(m,  "Full slots     : %d\n", kbuf.count);
-	seq_printf(m,  "Free slots     : %d\n", KBUF_NUM_BUFFERS - kbuf.count);
+	seq_printf(m,  "Free slots     : %u\n", kbuf.num_buffers - kbuf.count);
+	seq_printf(m,  "Peak full slots: %u\n", kbuf.peak_count);
 	seq_printf(m,  "Read  position : %d\n", kbuf.read_pos);
 	seq_printf(m,  "Write position : %d\n", kbuf.write_pos);
+	seq_printf(m,  "Mode           : %s\n",
+		   kbuf.mode < (int)ARRAY_SIZE(mode_name) ? mode_name[kbuf.mode] : "?");
+	seq_puts(m,    "--- throughput ---\n");
+	seq_printf(m,  "Msgs  produced : %llu\n", kbuf.msgs_produced);
+	seq_printf(m,  "Msgs  consumed : %llu\n", kbuf.msgs_consumed);
+	seq_printf(m,  "Bytes produced : %llu\n", kbuf.bytes_produced);
+	seq_printf(m,  "Bytes consumed : %llu\n", kbuf.bytes_consumed);
+	seq_printf(m,  "Reader sleeps  : %llu\n", kbuf.read_sleeps);
+	seq_printf(m,  "Writer sleeps  : %llu\n", kbuf.write_sleeps);
 	mutex_unlock(&kbuf.lock);
 	return 0;
 }

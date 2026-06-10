@@ -116,6 +116,11 @@ if [ -x /tests/test_poll ]; then
 	if timeout 20 /tests/test_poll; then echo "test_poll: OK"; else echo "test_poll: FAIL"; rc=1; fi
 fi
 
+if [ -x /tests/test_ioctl ]; then
+	echo "--- test_ioctl ---"
+	if timeout 20 /tests/test_ioctl; then echo "test_ioctl: OK"; else echo "test_ioctl: FAIL"; rc=1; fi
+fi
+
 echo "--- producer fills 8 slots ---"
 if timeout 15 /tests/test_producer 8 0; then echo "producer: OK"; else echo "producer: FAIL"; rc=1; fi
 cat /proc/kbuf_status
