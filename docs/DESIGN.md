@@ -50,6 +50,41 @@ recognised-but-unimplemented commands (vs `-ENOTTY` for unknown ones).
 reordered or resized. The `kbuf_stats` struct is the versioning vehicle if the
 interface must grow.
 
+## 3. poll/select/epoll support (Phase 2)
+
+**Decision.** Implement `.poll` by registering the caller on *both* wait queues
+with `poll_wait()` and returning `EPOLLIN | EPOLLRDNORM` while the ring is
+non-empty and `EPOLLOUT | EPOLLWRNORM` while it is non-full.
+
+**Why both queues.** A poller waiting only for readability still needs to be
+woken when the ring transitions full → not-full if it also asked for
+writability, and vice versa. `kbuf_read` wakes `write_wq` and `kbuf_write`
+wakes `read_wq` on every state change, so registering on both queues guarantees
+the poller is woken for either edge regardless of which event it is waiting on.
+`poll_wait()` only enqueues the task — it never sleeps — so briefly taking the
+mutex afterwards for a consistent (empty, full) snapshot is safe in poll
+context.
+
+**Level-triggered semantics.** The mask reflects current state every call, so
+both level-triggered (default) and edge-triggered (`EPOLLET`) epoll users behave
+correctly: a reader that drains only part of the ring is re-notified on the next
+`epoll_wait` because slots remain.
+
+**Test.** `tests/test_poll.c` samples readiness with a zero-timeout `poll()`
+across an empty → 1-message → full → drained progression, and confirms
+`epoll_wait` reports `EPOLLIN` when data is present. It is self-contained and
+runs unattended under the QEMU harness.
+
+## Test harness (QEMU)
+
+`scripts/run-qemu.sh` builds a busybox initramfs containing `kbuf.ko` and
+statically linked copies of every `tests/*.c`, boots it under QEMU, runs the
+suite as PID 1, and reports a `KBUF_QEMU_RESULT: PASS/FAIL` sentinel on the
+serial console. No root is needed to build the image: `/init` mounts devtmpfs
+and reopens `/dev/console` itself, so there are no device nodes to create. Only
+the boot needs a readable kernel image (host `/boot/vmlinuz-*` is typically mode
+0600, so the script expects a readable copy in `.qemu/bzImage`).
+
 ## Open questions (to resolve in the phase that needs them)
 
 - **Resize semantics (`KBUF_IOCRESIZE`).** What happens to in-flight data when

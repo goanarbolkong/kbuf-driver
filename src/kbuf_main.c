@@ -15,6 +15,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/poll.h>
 #include <linux/sched.h>
 #include <linux/wait.h>
 
@@ -103,12 +104,38 @@ static ssize_t kbuf_write(struct file *filp, const char __user *ubuf,
 	return ret;
 }
 
+/*
+ * poll/select/epoll support. We register on both wait queues so the caller is
+ * woken whether a slot frees up (writable) or fills (readable); kbuf_read and
+ * kbuf_write already wake the matching queue on every state change. The ring is
+ * readable while non-empty and writable while non-full. poll_wait() only queues
+ * the task; it never sleeps, so taking the mutex here just for a consistent
+ * snapshot is safe.
+ */
+static __poll_t kbuf_poll(struct file *filp, struct poll_table_struct *wait)
+{
+	__poll_t mask = 0;
+
+	poll_wait(filp, &kbuf.read_wq, wait);
+	poll_wait(filp, &kbuf.write_wq, wait);
+
+	mutex_lock(&kbuf.lock);
+	if (!kbuf_ring_is_empty(&kbuf))
+		mask |= EPOLLIN | EPOLLRDNORM;
+	if (!kbuf_ring_is_full(&kbuf))
+		mask |= EPOLLOUT | EPOLLWRNORM;
+	mutex_unlock(&kbuf.lock);
+
+	return mask;
+}
+
 static const struct file_operations kbuf_fops = {
 	.owner          = THIS_MODULE,
 	.open           = kbuf_open,
 	.release        = kbuf_release,
 	.read           = kbuf_read,
 	.write          = kbuf_write,
+	.poll           = kbuf_poll,
 	.unlocked_ioctl = kbuf_ioctl,
 	.compat_ioctl   = compat_ptr_ioctl,
 };
