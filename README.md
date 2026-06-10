@@ -46,7 +46,7 @@ the module to be MOK-signed first.
 | Phase | Feature | State |
 |-------|---------|-------|
 | 1 | Multi-file restructure + UAPI scaffold | ✅ done |
-| 2 | poll/epoll + QEMU test harness | ✅ code complete (QEMU run pending qemu install) |
+| 2 | poll/epoll + QEMU test harness | ✅ done (verified under QEMU) |
 | 3 | ioctl UAPI (resize, stats, reset, mode) | ABI defined, impl planned |
 | 4 | Multiple instances (N minors) | planned |
 | 5 | Lock-free SPSC mode | planned |

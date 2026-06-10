@@ -67,7 +67,7 @@ cp "$BB" "$ROOT/bin/busybox"
 chmod +x "$ROOT/bin/busybox"
 # Symlinks for the applets /init relies on (the kernel runs /init via /bin/sh,
 # so /bin/sh must exist in the cpio before boot).
-for applet in sh mount insmod rmmod cat ls echo sleep poweroff dmesg mkdir; do
+for applet in sh mount insmod rmmod cat ls echo sleep poweroff dmesg mkdir timeout; do
 	ln -sf busybox "$ROOT/bin/$applet"
 done
 
@@ -104,20 +104,23 @@ fi
 [ -e /dev/kbuf ] && echo "/dev/kbuf present" || { echo "/dev/kbuf MISSING"; rc=1; }
 cat /proc/kbuf_status
 
+# Self-contained tests first (each fills and drains the ring itself). Then the
+# producer/consumer pair, kept adjacent so the producer's 8 messages are still
+# present when the (blocking) consumer reads them. Every test is wrapped in a
+# timeout so a hang can never wedge the VM — it fails the run instead.
 echo "--- test_nonblock ---"
-if /tests/test_nonblock; then echo "test_nonblock: OK"; else echo "test_nonblock: FAIL"; rc=1; fi
+if timeout 20 /tests/test_nonblock; then echo "test_nonblock: OK"; else echo "test_nonblock: FAIL"; rc=1; fi
 
-echo "--- producer fills 8 slots ---"
-if /tests/test_producer 8 0; then echo "producer: OK"; else echo "producer: FAIL"; rc=1; fi
-cat /proc/kbuf_status
-
-echo "--- test_poll (if present) ---"
 if [ -x /tests/test_poll ]; then
-	if /tests/test_poll; then echo "test_poll: OK"; else echo "test_poll: FAIL"; rc=1; fi
+	echo "--- test_poll ---"
+	if timeout 20 /tests/test_poll; then echo "test_poll: OK"; else echo "test_poll: FAIL"; rc=1; fi
 fi
 
+echo "--- producer fills 8 slots ---"
+if timeout 15 /tests/test_producer 8 0; then echo "producer: OK"; else echo "producer: FAIL"; rc=1; fi
+cat /proc/kbuf_status
 echo "--- consumer drains 8 slots ---"
-if /tests/test_consumer 8 0; then echo "consumer: OK"; else echo "consumer: FAIL"; rc=1; fi
+if timeout 15 /tests/test_consumer 8 0; then echo "consumer: OK"; else echo "consumer: FAIL"; rc=1; fi
 
 echo "--- rmmod ---"
 if rmmod kbuf; then echo "rmmod: OK"; else echo "rmmod: FAIL"; rc=1; fi
@@ -139,10 +142,22 @@ echo "run-qemu: packing initramfs"
 	| gzip -9 ) > "$BUILD/initramfs.cpio.gz"
 
 # --- boot --------------------------------------------------------------------
+# Hardware acceleration is effectively mandatory: under TCG software emulation
+# this kernel takes minutes just to reach userspace. Use KVM when /dev/kvm is
+# usable, otherwise warn and fall back to (very slow) TCG.
+if [ -w /dev/kvm ]; then
+	ACCEL=(-enable-kvm -cpu host)
+	echo "run-qemu: KVM acceleration enabled"
+else
+	ACCEL=(-cpu qemu64)
+	echo "run-qemu: WARNING /dev/kvm not writable — falling back to slow TCG."
+	echo "          Add yourself to the kvm group: sudo usermod -aG kvm \$USER"
+fi
+
 LOG="$BUILD/console.log"
 echo "run-qemu: booting $KERNEL_IMG (timeout ${TIMEOUT}s)"
 set +e
-timeout "$TIMEOUT" qemu-system-x86_64 \
+timeout "$TIMEOUT" qemu-system-x86_64 "${ACCEL[@]}" \
 	-kernel "$KERNEL_IMG" \
 	-initrd "$BUILD/initramfs.cpio.gz" \
 	-append "console=ttyS0 panic=-1 oops=panic loglevel=4 rdinit=/init" \
