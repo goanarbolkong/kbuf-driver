@@ -1,7 +1,4 @@
 # SPDX-License-Identifier: GPL-2.0
-# CI stub (Phase 8 fills in the QEMU boot + kselftest run and the header matrix).
-# For now: build the module, build the tests, and run the coding-style /
-# static-analysis gates so style regressions are caught on every push.
 name: ci
 
 on:
@@ -10,33 +7,60 @@ on:
   pull_request:
 
 jobs:
-  build:
+  # Gating checks: coding style, static analysis, and a clean build of the
+  # module + user-space programs against the runner's kernel headers.
+  static:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # TODO(phase-8): expand to 3-4 kernel header versions.
-        kernel: [linux-headers-generic]
+        # The runner can reliably install only its own kernel's headers. On a
+        # self-hosted runner with several header sets installed, add them here
+        # to get the multi-version build matrix the project targets.
+        kheaders:
+          - "linux-headers-$(uname -r)"
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install build deps
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential ${{ matrix.kernel }} sparse
+          sudo apt-get install -y build-essential sparse \
+            $(eval echo ${{ matrix.kheaders }})
 
-      - name: checkpatch (--strict)
-        run: |
-          make checkpatch KDIR=/lib/modules/$(uname -r)/build || true
-          # TODO(phase-8): drop "|| true" once the tree is clean under --strict.
+      - name: checkpatch --strict
+        run: make checkpatch KDIR=/lib/modules/$(uname -r)/build
 
       - name: Build module
         run: make modules KDIR=/lib/modules/$(uname -r)/build
 
-      - name: Build tests
-        run: make tests
+      - name: Build tests and benchmark
+        run: make tests bench
 
       - name: sparse (make C=2)
         run: make sparse KDIR=/lib/modules/$(uname -r)/build
 
-      # TODO(phase-8): QEMU boot + insmod + run kselftest suite.
+  # Boot a throwaway VM, insmod the module, and run the full functional suite.
+  # Needs a readable kernel image and (for usable speed) KVM, so it is
+  # best-effort on hosted runners; treat the static job as the hard gate. On a
+  # KVM-capable runner it is the real end-to-end check.
+  qemu:
+    runs-on: ubuntu-latest
+    needs: static
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential busybox-static \
+            qemu-system-x86 linux-headers-$(uname -r)
+
+      - name: Provision a readable kernel image
+        run: |
+          mkdir -p .qemu
+          sudo install -m644 /boot/vmlinuz-$(uname -r) .qemu/bzImage
+
+      - name: Boot QEMU and run the suite
+        run: ./scripts/run-qemu.sh

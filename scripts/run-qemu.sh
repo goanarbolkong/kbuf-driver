@@ -141,6 +141,11 @@ if [ -x /tests/test_ioctl ]; then
 	if timeout 20 /tests/test_ioctl; then echo "test_ioctl: OK"; else echo "test_ioctl: FAIL"; rc=1; fi
 fi
 
+if [ -x /tests/test_edge ]; then
+	echo "--- test_edge ---"
+	if timeout 20 /tests/test_edge; then echo "test_edge: OK"; else echo "test_edge: FAIL"; rc=1; fi
+fi
+
 if [ -x /tests/test_multi ]; then
 	echo "--- test_multi ---"
 	if timeout 20 /tests/test_multi; then echo "test_multi: OK"; else echo "test_multi: FAIL"; rc=1; fi
@@ -179,6 +184,21 @@ if [ "${traced:-0}" = 1 ]; then
 		echo "tracepoint kbuf_produce: FAIL"; rc=1
 	fi
 fi
+
+# Unload-under-load: an open fd holds a module reference, so rmmod must be
+# refused (EBUSY) until the fd is closed.
+echo "--- unload-under-load ---"
+sleep 30 < /dev/kbuf0 &
+holder=$!
+sleep 1
+if rmmod kbuf 2>/dev/null; then
+	echo "rmmod while fd open: UNEXPECTED success"; rc=1
+else
+	echo "rmmod refused while fd open (EBUSY): OK"
+fi
+kill "$holder" 2>/dev/null
+wait "$holder" 2>/dev/null
+sleep 1
 
 echo "--- rmmod ---"
 if rmmod kbuf; then echo "rmmod: OK"; else echo "rmmod: FAIL"; rc=1; fi

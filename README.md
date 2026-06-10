@@ -56,5 +56,5 @@ the module to be MOK-signed first.
 | 5 | Lock-free SPSC mode | ✅ done (verified under QEMU) |
 | 6 | mmap zero-copy ring (magic ring + libkbuf) | ✅ done (verified under QEMU) |
 | 7 | debugfs + tracepoints | ✅ done (verified under QEMU) |
-| 8 | kselftest suite + CI | CI stub in place |
+| 8 | functional suite + CI | ✅ done (suite verified under QEMU) |
 | 9 | Benchmark report | planned |

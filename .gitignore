@@ -22,6 +22,7 @@ tests/test_ioctl
 tests/test_multi
 tests/test_spsc
 tests/test_mmap
+tests/test_edge
 bench/kbuf_bench
 bench/*.bin
 

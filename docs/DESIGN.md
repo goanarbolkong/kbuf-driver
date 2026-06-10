@@ -268,6 +268,28 @@ now" (cheap polling). The QEMU harness enables the tracepoints, runs the whole
 suite, then confirms a debugfs counter advanced and that `kbuf_produce` events
 landed in the trace buffer.
 
+## 9. Test suite and CI (Phase 8)
+
+**Coverage.** The functional suite spans the behaviours the project cares about:
+blocking and `O_NONBLOCK` (`test_nonblock`), `poll`/`epoll` readiness
+(`test_poll`), the ioctl UAPI incl. resize `-EBUSY`/`-EINVAL` races
+(`test_ioctl`), per-device independence (`test_multi`), the lock-free SPSC path
+under cross-core load (`test_spsc`), the mmap zero-copy ring (`test_mmap`),
+partial-read datagram semantics and signal interruption → `EINTR`
+(`test_edge`), and a producer/consumer round trip. The harness adds
+**unload-under-load**: while an fd is open the module holds a reference, so
+`rmmod` is correctly refused with `EBUSY` until the fd is released.
+
+**CI (`.github/workflows/ci.yml`).** A gating `static` job runs
+`checkpatch --strict`, builds the module + user-space programs, and runs sparse
+(`make C=2`) against the runner's kernel headers — these are the hard gate and
+pass cleanly. A second `qemu` job boots the module in a throwaway VM and runs
+the suite; it is marked best-effort because hosted runners lack a readable
+kernel image and KVM, but on a KVM-capable (e.g. self-hosted) runner it is the
+real end-to-end check, reusing the same `scripts/run-qemu.sh` used locally. The
+matrix is structured for multiple kernel-header versions; expanding it beyond
+the runner's own kernel needs a runner with those headers installed.
+
 ## Test harness (QEMU)
 
 `scripts/run-qemu.sh` builds a busybox initramfs containing `kbuf.ko` and
