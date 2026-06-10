@@ -30,6 +30,10 @@ bench/*.bin
 # QEMU harness build dir (kernel image, initramfs, console log)
 .qemu/
 
+# Bare-metal benchmark run artifacts
+.bench-baremetal.log
+.saved-governor
+
 # Signing material — NEVER commit the private key
 MOK.key
 MOK.crt
