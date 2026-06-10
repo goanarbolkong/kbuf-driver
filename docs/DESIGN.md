@@ -244,6 +244,30 @@ every byte by absolute position to catch any loss, reorder, or wrap miscopy.
 slot path; in-VM it shows roughly an order-of-magnitude speedup (illustrative —
 the rigorous report with methodology is Phase 9).
 
+## 8. Observability — debugfs + tracepoints (Phase 7)
+
+**Tracepoints.** `src/kbuf_trace.h` defines events under the `kbuf` trace
+system: `kbuf_produce` and `kbuf_consume` (a shared `DECLARE_EVENT_CLASS`
+carrying device id, byte count, and resulting occupancy) and `kbuf_wakeup`
+(device id + which queue was woken). They fire from the ring core and the
+read/write wake sites, covering both blocking and SPSC modes, and are usable
+with `perf record -e 'kbuf:*'` or via tracefs. The out-of-tree plumbing follows
+`samples/trace_events`: one TU (`kbuf_main.c`) defines `CREATE_TRACE_POINTS`
+before including the header, which sets `TRACE_INCLUDE_PATH .` (resolved through
+the module's `-I$(src)/src`).
+
+**debugfs.** `src/kbuf_debugfs.c` creates `/sys/kernel/debug/kbuf/kbufN/` with
+one file per counter (msgs/bytes produced+consumed, sleeps, peak, indices,
+geometry), wired straight to the device fields with `debugfs_create_u32/u64`.
+These are read without the device lock — a best-effort live view, exact at rest.
+It degrades to a no-op when `CONFIG_DEBUG_FS` is off.
+
+**Why both.** Tracepoints answer "what happened, when, in what order" (per-event
+stream, near-zero cost when disabled); debugfs answers "what is the state right
+now" (cheap polling). The QEMU harness enables the tracepoints, runs the whole
+suite, then confirms a debugfs counter advanced and that `kbuf_produce` events
+landed in the trace buffer.
+
 ## Test harness (QEMU)
 
 `scripts/run-qemu.sh` builds a busybox initramfs containing `kbuf.ko` and

@@ -26,6 +26,15 @@
 
 #include "kbuf_internal.h"
 
+#define CREATE_TRACE_POINTS
+#include "kbuf_trace.h"
+
+/* Device index (minor) for tracepoints. */
+static inline unsigned int kbuf_id(const struct kbuf_dev *dev)
+{
+	return (unsigned int)(dev - kbuf_devices);
+}
+
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("OS Lab Student");
 MODULE_DESCRIPTION("Kernel multi-buffer producer/consumer driver");
@@ -92,8 +101,10 @@ static ssize_t kbuf_read_blocking(struct kbuf_dev *dev, struct file *filp,
 	ret = kbuf_ring_consume(dev, ubuf, count);
 	mutex_unlock(&dev->lock);
 
-	if (ret >= 0)
+	if (ret >= 0) {
 		wake_up_interruptible(&dev->write_wq);	/* a slot is now free */
+		trace_kbuf_wakeup(kbuf_id(dev), 0);
+	}
 	return ret;
 }
 
@@ -116,8 +127,10 @@ static ssize_t kbuf_read_spsc(struct kbuf_dev *dev, struct file *filp,
 	}
 
 	ret = kbuf_spsc_consume(dev, ubuf, count);
-	if (ret >= 0)
+	if (ret >= 0) {
 		wake_up_interruptible(&dev->write_wq);	/* a slot is now free */
+		trace_kbuf_wakeup(kbuf_id(dev), 0);
+	}
 	return ret;
 }
 
@@ -160,8 +173,10 @@ static ssize_t kbuf_write_blocking(struct kbuf_dev *dev, struct file *filp,
 	ret = kbuf_ring_produce(dev, ubuf, count);
 	mutex_unlock(&dev->lock);
 
-	if (ret >= 0)
+	if (ret >= 0) {
 		wake_up_interruptible(&dev->read_wq);	/* a full slot is ready */
+		trace_kbuf_wakeup(kbuf_id(dev), 1);
+	}
 	return ret;
 }
 
@@ -183,8 +198,10 @@ static ssize_t kbuf_write_spsc(struct kbuf_dev *dev, struct file *filp,
 	}
 
 	ret = kbuf_spsc_produce(dev, ubuf, count);
-	if (ret >= 0)
+	if (ret >= 0) {
 		wake_up_interruptible(&dev->read_wq);	/* a full slot is ready */
+		trace_kbuf_wakeup(kbuf_id(dev), 1);
+	}
 	return ret;
 }
 
@@ -333,6 +350,7 @@ static int __init kbuf_init(void)
 
 	if (kbuf_proc_register())
 		pr_warn("kbuf: proc_create failed (non-fatal)\n");
+	kbuf_debugfs_register();
 
 	pr_info("kbuf: loaded - %u devices /dev/kbuf0..%u, /proc/kbuf_status\n",
 		kbuf_ndevices, kbuf_ndevices - 1);
@@ -350,6 +368,7 @@ err_free:
 
 static void __exit kbuf_exit(void)
 {
+	kbuf_debugfs_unregister();
 	kbuf_proc_unregister();
 	kbuf_teardown_devices(kbuf_ndevices);
 	class_destroy(kbuf_class);

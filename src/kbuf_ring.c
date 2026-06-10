@@ -17,6 +17,13 @@
 #include <linux/uaccess.h>
 
 #include "kbuf_internal.h"
+#include "kbuf_trace.h"
+
+/* Device index (minor) for tracepoints. */
+static inline unsigned int kbuf_id(const struct kbuf_dev *dev)
+{
+	return (unsigned int)(dev - kbuf_devices);
+}
 
 /*
  * Allocate a slot array and each slot's data buffer. No lock required: the
@@ -83,6 +90,7 @@ ssize_t kbuf_ring_consume(struct kbuf_dev *dev, char __user *ubuf, size_t count)
 	dev->count--;
 	dev->bytes_consumed += len;
 	dev->msgs_consumed++;
+	trace_kbuf_consume(kbuf_id(dev), (unsigned int)len, dev->count);
 	return (ssize_t)len;
 }
 
@@ -108,6 +116,7 @@ ssize_t kbuf_ring_produce(struct kbuf_dev *dev, const char __user *ubuf, size_t 
 		dev->peak_count = dev->count;
 	dev->bytes_produced += count;
 	dev->msgs_produced++;
+	trace_kbuf_produce(kbuf_id(dev), (unsigned int)count, dev->count);
 	return (ssize_t)count;
 }
 
@@ -151,6 +160,8 @@ ssize_t kbuf_spsc_consume(struct kbuf_dev *dev, char __user *ubuf, size_t count)
 
 	WRITE_ONCE(dev->bytes_consumed, dev->bytes_consumed + len);
 	WRITE_ONCE(dev->msgs_consumed, dev->msgs_consumed + 1);
+	trace_kbuf_consume(kbuf_id(dev), (unsigned int)len,
+			   READ_ONCE(dev->prod_idx) - (cons + 1));
 	return (ssize_t)len;
 }
 
@@ -173,6 +184,7 @@ ssize_t kbuf_spsc_produce(struct kbuf_dev *dev, const char __user *ubuf, size_t 
 	occ = prod + 1 - READ_ONCE(dev->cons_idx);
 	if (occ > READ_ONCE(dev->peak_count))
 		WRITE_ONCE(dev->peak_count, occ);
+	trace_kbuf_produce(kbuf_id(dev), (unsigned int)count, occ);
 	return (ssize_t)count;
 }
 

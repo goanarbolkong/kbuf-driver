@@ -67,7 +67,7 @@ cp "$BB" "$ROOT/bin/busybox"
 chmod +x "$ROOT/bin/busybox"
 # Symlinks for the applets /init relies on (the kernel runs /init via /bin/sh,
 # so /bin/sh must exist in the cpio before boot).
-for applet in sh mount insmod rmmod cat ls echo sleep poweroff dmesg mkdir timeout; do
+for applet in sh mount insmod rmmod cat ls echo sleep poweroff dmesg mkdir timeout grep; do
 	ln -sf busybox "$ROOT/bin/$applet"
 done
 
@@ -112,6 +112,18 @@ echo "device nodes: $ndev"
 [ "$ndev" -eq 4 ] && echo "4 devices (default ndevices): OK" || { echo "expected 4 devices, got $ndev"; rc=1; }
 cat /proc/kbuf_status
 
+# Observability (Phase 7): mount debugfs and enable the kbuf tracepoints up
+# front, so the traffic from the tests below is recorded; verified near the end.
+echo "--- observability setup ---"
+mount -t debugfs none /sys/kernel/debug 2>/dev/null
+[ -d /sys/kernel/debug/kbuf/kbuf0 ] && echo "debugfs kbuf dir: OK" || { echo "debugfs kbuf dir: MISSING"; rc=1; }
+TRACE=/sys/kernel/debug/tracing
+if echo 1 > "$TRACE/events/kbuf/enable" 2>/dev/null; then
+	traced=1; echo "tracepoints enabled: OK"
+else
+	traced=0; echo "tracepoints: unavailable (skipping trace check)"
+fi
+
 # Self-contained tests first (each fills and drains the ring itself). Then the
 # producer/consumer pair, kept adjacent so the producer's 8 messages are still
 # present when the (blocking) consumer reads them. Every test is wrapped in a
@@ -155,6 +167,18 @@ if timeout 15 /tests/test_producer 8 0; then echo "producer: OK"; else echo "pro
 cat /proc/kbuf_status
 echo "--- consumer drains 8 slots ---"
 if timeout 15 /tests/test_consumer 8 0; then echo "consumer: OK"; else echo "consumer: FAIL"; rc=1; fi
+
+echo "--- observability check ---"
+mp=$(cat /sys/kernel/debug/kbuf/kbuf0/msgs_produced 2>/dev/null)
+echo "debugfs kbuf0/msgs_produced=${mp:-?}"
+[ "${mp:-0}" -gt 0 ] && echo "debugfs counter nonzero: OK" || { echo "debugfs counter: FAIL"; rc=1; }
+if [ "${traced:-0}" = 1 ]; then
+	if grep -q kbuf_produce "$TRACE/trace"; then
+		echo "tracepoint kbuf_produce recorded: OK"
+	else
+		echo "tracepoint kbuf_produce: FAIL"; rc=1
+	fi
+fi
 
 echo "--- rmmod ---"
 if rmmod kbuf; then echo "rmmod: OK"; else echo "rmmod: FAIL"; rc=1; fi

@@ -39,11 +39,12 @@ sparse:
 	$(MAKE) -C $(KDIR) M=$(PWD) C=2 modules
 
 ## checkpatch: kernel coding-style check (--strict).
-## include/libkbuf.h is a user-space header (uint64_t, not the kernel u64), so
-## it is intentionally excluded from the kernel coding-style check.
+## Excluded: include/libkbuf.h (user-space header: uint64_t, not kernel u64)
+## and src/kbuf_trace.h (TRACE_EVENT macro DSL with its own prescribed layout).
+CHECKPATCH_FILES := $(filter-out src/kbuf_trace.h,$(wildcard src/*.c src/*.h)) \
+		    include/kbuf.h
 checkpatch:
-	$(KDIR)/scripts/checkpatch.pl --strict --no-tree -f \
-		src/*.c src/*.h include/kbuf.h
+	$(KDIR)/scripts/checkpatch.pl --strict --no-tree -f $(CHECKPATCH_FILES)
 
 clean:
 	$(MAKE) -C $(KDIR) M=$(PWD) clean

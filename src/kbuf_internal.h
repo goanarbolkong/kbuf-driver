@@ -127,4 +127,8 @@ int  kbuf_mmap_dev_alloc(struct kbuf_dev *dev);
 void kbuf_mmap_dev_free(struct kbuf_dev *dev);
 int  kbuf_mmap(struct file *filp, struct vm_area_struct *vma);
 
+/* debugfs counters - src/kbuf_debugfs.c */
+void kbuf_debugfs_register(void);
+void kbuf_debugfs_unregister(void);
+
 #endif /* _KBUF_INTERNAL_H */
