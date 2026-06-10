@@ -54,6 +54,27 @@ static uint64_t now_ns(void)
 	return (uint64_t)ts.tv_sec * 1000000000ull + ts.tv_nsec;
 }
 
+/*
+ * The two CPUs the producer and consumer are pinned to. They must be distinct
+ * PHYSICAL cores: pinning to hyperthread siblings of one core makes the two
+ * busy-poll loops contend for that core's execution units and wrecks latency.
+ * Defaults are 0 and 1 (fine when those are separate cores, e.g. a 2-vCPU VM);
+ * override with KBUF_BENCH_CPU_A / KBUF_BENCH_CPU_B on SMT hardware.
+ */
+static int cpu_a = 0;
+static int cpu_b = 1;
+
+static void pin_cpus_from_env(void)
+{
+	const char *a = getenv("KBUF_BENCH_CPU_A");
+	const char *b = getenv("KBUF_BENCH_CPU_B");
+
+	if (a)
+		cpu_a = atoi(a);
+	if (b)
+		cpu_b = atoi(b);
+}
+
 static void pin_to_cpu(int cpu)
 {
 	cpu_set_t set;
@@ -61,6 +82,54 @@ static void pin_to_cpu(int cpu)
 	CPU_ZERO(&set);
 	CPU_SET(cpu, &set);
 	sched_setaffinity(0, sizeof(set), &set);
+}
+
+/*
+ * Reduce host-noise in the measurements:
+ *   - mlockall pins all pages so a swapping/under-pressure host cannot fault
+ *     the busy-poll loops mid-sample;
+ *   - with KBUF_BENCH_RT=1, run SCHED_FIFO so the desktop (gnome-shell, etc.)
+ *     cannot preempt a pinned producer/consumer and inflate the latency tail.
+ *     RT requires privilege (run via sudo) and is inherited across fork().
+ * Both are best-effort: on failure we warn and continue with noisier numbers.
+ */
+static void reduce_noise(void)
+{
+	if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0)
+		fprintf(stderr, "warn: mlockall: %s (paging noise possible)\n",
+			strerror(errno));
+
+	if (getenv("KBUF_BENCH_RT")) {
+		struct sched_param sp = { .sched_priority = 80 };
+
+		if (sched_setscheduler(0, SCHED_FIFO, &sp) != 0)
+			fprintf(stderr,
+				"warn: SCHED_FIFO: %s (run via sudo for RT; continuing)\n",
+				strerror(errno));
+		else
+			printf("scheduling: SCHED_FIFO prio 80\n");
+	}
+}
+
+/*
+ * Open and mmap /dev/kbuf0. A failure here used to leave kbuf_map zeroed and
+ * crash on the first head/tail dereference; report errno and bail loudly so a
+ * mmap problem is diagnosable instead of a null-pointer segfault.
+ */
+static void map_or_die(struct kbuf_map *m, const char *who)
+{
+	int fd = open("/dev/kbuf0", O_RDWR);
+
+	if (fd < 0) {
+		fprintf(stderr, "%s: open(/dev/kbuf0): %s\n", who, strerror(errno));
+		exit(2);
+	}
+	if (kbuf_map_open(fd, m) != 0) {
+		fprintf(stderr, "%s: kbuf_map_open (mmap %zu bytes): %s\n",
+			who, (size_t)(sysconf(_SC_PAGESIZE) + 2 * KBUF_MMAP_CAPACITY),
+			strerror(errno));
+		exit(2);
+	}
 }
 
 /* Configure a slot-ring device: geometry to fit msgsize, and the ring mode. */
@@ -122,14 +191,13 @@ static double run_once(int transport, unsigned int msgsize, uint64_t total)
 		unsigned char *buf = malloc(msgsize);
 		uint64_t i;
 
-		pin_to_cpu(0);
+		pin_to_cpu(cpu_a);
 		memset(buf, 0xa5, msgsize);
 		if (transport == T_MMAP) {
 			struct kbuf_map m = { 0 };
-			int fd = open("/dev/kbuf0", O_RDWR);
 			uint64_t done = 0;
 
-			kbuf_map_open(fd, &m);
+			map_or_die(&m, "producer");
 			while (done < total) {
 				size_t w = kbuf_map_write(&m, buf, msgsize);
 
@@ -159,13 +227,12 @@ static double run_once(int transport, unsigned int msgsize, uint64_t total)
 		unsigned char *buf = malloc(msgsize);
 		uint64_t i;
 
-		pin_to_cpu(1);
+		pin_to_cpu(cpu_b);
 		if (transport == T_MMAP) {
 			struct kbuf_map m = { 0 };
-			int fd = open("/dev/kbuf0", O_RDWR);
 			uint64_t done = 0;
 
-			kbuf_map_open(fd, &m);
+			map_or_die(&m, "consumer");
 			kbuf_map_reset(&m);
 			while (done < total) {
 				size_t r = kbuf_map_read(&m, buf, msgsize);
@@ -249,7 +316,7 @@ static int cmp_u64(const void *a, const void *b)
 static void latency(int samples)
 {
 	uint64_t *lat;
-	int fd, i;
+	int i;
 	struct kbuf_map m = { 0 };
 	pid_t pid;
 
@@ -258,16 +325,14 @@ static void latency(int samples)
 	if (lat == MAP_FAILED)
 		return;
 
-	fd = open("/dev/kbuf0", O_RDWR);
-	if (fd < 0 || kbuf_map_open(fd, &m) != 0)
-		return;
+	map_or_die(&m, "latency");
 	kbuf_map_reset(&m);
 
 	pid = fork();
 	if (pid == 0) {
 		uint64_t ts;
 
-		pin_to_cpu(0);
+		pin_to_cpu(cpu_a);
 		for (i = 0; i < samples; i++) {
 			ts = now_ns();
 			while (kbuf_map_write(&m, &ts, sizeof(ts)) == 0)
@@ -275,7 +340,7 @@ static void latency(int samples)
 		}
 		_exit(0);
 	}
-	pin_to_cpu(1);
+	pin_to_cpu(cpu_b);
 	for (i = 0; i < samples; i++) {
 		uint64_t ts;
 
@@ -311,12 +376,12 @@ static double fs_run(volatile uint64_t *x, volatile uint64_t *y, uint64_t iters)
 	uint64_t i;
 
 	if (pid == 0) {
-		pin_to_cpu(0);
+		pin_to_cpu(cpu_a);
 		for (i = 0; i < iters; i++)
 			(*x)++;
 		_exit(0);
 	}
-	pin_to_cpu(1);
+	pin_to_cpu(cpu_b);
 	for (i = 0; i < iters; i++)
 		(*y)++;
 	waitpid(pid, NULL, 0);
@@ -349,7 +414,10 @@ int main(int argc, char *argv[])
 	int lat_samples = quick ? 2000 : 20000;
 	uint64_t fs_iters = quick ? (20ULL << 20) : (200ULL << 20);
 
+	pin_cpus_from_env();
+	reduce_noise();
 	printf("=== kbuf benchmarks (%s) ===\n", quick ? "quick" : "full");
+	printf("producer CPU=%d  consumer CPU=%d\n", cpu_a, cpu_b);
 	throughput(total, runs);
 	latency(lat_samples);
 	falsesharing(fs_iters);

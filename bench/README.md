@@ -1,17 +1,30 @@
 # bench/
 
-`kbuf_bench.c` (added in Phase 6) compares mmap zero-copy throughput against the
-`read()`/`write()` slot path with a producer/consumer pinned to different CPUs.
-Build with `make bench`; run on a `kbuf` device present (`/dev/kbuf0` and
-`/dev/kbuf1`). It prints MB/s for each path and the speedup. The numbers it
-prints are a quick comparison only.
+`kbuf_bench.c` compares the kbuf byte-transfer transports between a producer and
+a consumer pinned to different CPUs: the `mmap` zero-copy ring, the blocking
+`mutex` slot path, the lock-free `spsc` slot path, and a `pipe(2)` baseline. It
+measures throughput vs message size, one-way mmap latency percentiles, and a
+false-sharing experiment.
 
-The rigorous report lands in Phase 9. Planned comparisons (each with documented
-methodology — CPU pinning, fixed governor, ≥10 runs, error bars):
+Build with `make bench`; run with the `kbuf` module loaded (`/dev/kbuf0..2`):
 
-- throughput vs message size for `{mutex, lock-free SPSC, mmap, pipe(2)}`
-- read/write latency percentiles (p50/p90/p99)
-- false-sharing before/after experiment
+```
+./bench/kbuf_bench full      # 64 MiB/run, 5 runs, 20k latency samples
+./bench/kbuf_bench quick     # smaller/faster smoke run
+```
 
-Results and methodology are written up in `../docs/BENCHMARKS.md`. No number
-goes in that file without the methodology that produced it.
+Knobs (environment variables):
+
+- `KBUF_BENCH_CPU_A` / `KBUF_BENCH_CPU_B` — the producer/consumer CPUs. **Must be
+  two distinct physical cores**; on an SMT host, CPU 0 and 1 are usually
+  hyperthread siblings of one core (check `thread_siblings_list`) and will skew
+  the results. Defaults to 0 and 1.
+- `KBUF_BENCH_RT=1` — run the workers `SCHED_FIFO` (needs root) to keep the
+  desktop from preempting the busy-poll loops. Opt-in; unnecessary on a quiet host.
+
+The benchmark always `mlockall`s its pages so no sample includes a page fault.
+
+For a full, reproducible bare-metal run (MOK-sign + governor pin + load + run +
+teardown), use `scripts/run-baremetal-bench.sh`. Results and methodology are
+written up in `../docs/BENCHMARKS.md`; no number goes in that file without the
+methodology that produced it.
