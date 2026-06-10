@@ -57,4 +57,4 @@ the module to be MOK-signed first.
 | 6 | mmap zero-copy ring (magic ring + libkbuf) | ✅ done (verified under QEMU) |
 | 7 | debugfs + tracepoints | ✅ done (verified under QEMU) |
 | 8 | functional suite + CI | ✅ done (suite verified under QEMU) |
-| 9 | Benchmark report | planned |
+| 9 | Benchmark report | ✅ done (docs/BENCHMARKS.md) |

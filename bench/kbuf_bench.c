@@ -1,14 +1,22 @@
 /*
- * kbuf_bench.c — throughput: mmap zero-copy ring vs read()/write() syscalls.
+ * kbuf_bench.c — throughput, latency, and false-sharing benchmarks.
  *
- * Transfers the same number of bytes through (a) the mmap ring on /dev/kbuf0
- * via libkbuf and (b) the slot ring on /dev/kbuf1 via blocking read()/write(),
- * with a producer and consumer pinned to different CPUs, and prints MB/s for
- * each plus the speedup.
+ * Compares four byte-transfer transports between a producer and a consumer
+ * pinned to different CPUs:
+ *   mutex  - slot ring on /dev/kbuf1 in blocking mode, via read()/write()
+ *   spsc   - slot ring on /dev/kbuf2 in lock-free SPSC mode, via read()/write()
+ *   mmap   - mmap zero-copy ring on /dev/kbuf0, via libkbuf (no syscalls)
+ *   pipe   - pipe(2), as a kernel baseline
  *
- * This is a quick comparison, not the rigorous report — Phase 9 (docs/
- * BENCHMARKS.md) adds methodology (governor pinning, repeated runs, error
- * bars). Numbers from inside a VM are illustrative only.
+ * Experiments:
+ *   throughput   - MB/s vs message size, several runs (min/avg/max)
+ *   latency      - one-way produce->consume latency percentiles (mmap ring)
+ *   falsesharing - two cores hammering counters on the same vs separate lines
+ *
+ * Numbers are environment-dependent; see docs/BENCHMARKS.md for methodology and
+ * the caveat that figures gathered inside a VM are illustrative, not bare metal.
+ *
+ * Usage: kbuf_bench [quick|full]   (default: full)
  */
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -20,12 +28,15 @@
 #include <stdint.h>
 #include <time.h>
 #include <sched.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <sys/wait.h>
 
 #include "kbuf.h"
 #include "libkbuf.h"
 
-#define CHUNK 4096
+enum { T_MUTEX, T_SPSC, T_MMAP, T_PIPE, T_COUNT };
+static const char *t_name[T_COUNT] = { "mutex", "spsc", "mmap", "pipe" };
 
 static double now_sec(void)
 {
@@ -33,6 +44,14 @@ static double now_sec(void)
 
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return ts.tv_sec + ts.tv_nsec / 1e9;
+}
+
+static uint64_t now_ns(void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000000000ull + ts.tv_nsec;
 }
 
 static void pin_to_cpu(int cpu)
@@ -44,103 +63,295 @@ static void pin_to_cpu(int cpu)
 	sched_setaffinity(0, sizeof(set), &set);
 }
 
-/* ---- mmap path ---- */
-static double bench_mmap(uint64_t total)
+/* Configure a slot-ring device: geometry to fit msgsize, and the ring mode. */
+static int slot_setup(const char *dev, unsigned int msgsize, int spsc)
 {
-	struct kbuf_map m;
-	unsigned char buf[CHUNK];
-	uint64_t done = 0;
-	double t0;
-	int fd;
-	pid_t pid;
+	struct kbuf_resize rz = { .num_buffers = 8, .buffer_size = msgsize };
+	int mode = spsc ? KBUF_MODE_SPSC : KBUF_MODE_BLOCKING;
+	char drain[65536];
+	int fd = open(dev, O_RDWR | O_NONBLOCK);
 
-	fd = open("/dev/kbuf0", O_RDWR);
-	if (fd < 0 || kbuf_map_open(fd, &m) != 0) {
-		perror("mmap setup");
+	if (fd < 0)
+		return -1;
+	mode = KBUF_MODE_BLOCKING;		/* leave SPSC first if set */
+	ioctl(fd, KBUF_IOCSMODE, &mode);
+	while (read(fd, drain, sizeof(drain)) > 0)
+		;
+	if (ioctl(fd, KBUF_IOCRESIZE, &rz) != 0) {
+		close(fd);
 		return -1;
 	}
-	kbuf_map_reset(&m);
+	mode = spsc ? KBUF_MODE_SPSC : KBUF_MODE_BLOCKING;
+	if (ioctl(fd, KBUF_IOCSMODE, &mode) != 0) {
+		close(fd);
+		return -1;
+	}
+	close(fd);
+	return 0;
+}
+
+/* One throughput run; returns seconds to move @total bytes in @msgsize chunks. */
+static double run_once(int transport, unsigned int msgsize, uint64_t total)
+{
+	uint64_t nmsg = total / msgsize;
+	double t0;
+	pid_t pid;
+	int pipefd[2] = { -1, -1 };
+	const char *dev = NULL;
+
+	if (transport == T_MUTEX) {
+		dev = "/dev/kbuf1";
+		if (slot_setup(dev, msgsize, 0) != 0)
+			return -1;
+	} else if (transport == T_SPSC) {
+		dev = "/dev/kbuf2";
+		if (slot_setup(dev, msgsize, 1) != 0)
+			return -1;
+	} else if (transport == T_PIPE) {
+		if (pipe(pipefd) != 0)
+			return -1;
+	}
 
 	t0 = now_sec();
 	pid = fork();
-	if (pid == 0) {
-		pin_to_cpu(0);
-		memset(buf, 0xa5, sizeof(buf));
-		while (done < total) {
-			size_t w = kbuf_map_write(&m, buf, CHUNK);
+	if (pid < 0)
+		return -1;
 
-			if (!w)
-				sched_yield();
-			done += w;
+	if (pid == 0) {
+		/* producer */
+		unsigned char *buf = malloc(msgsize);
+		uint64_t i;
+
+		pin_to_cpu(0);
+		memset(buf, 0xa5, msgsize);
+		if (transport == T_MMAP) {
+			struct kbuf_map m = { 0 };
+			int fd = open("/dev/kbuf0", O_RDWR);
+			uint64_t done = 0;
+
+			kbuf_map_open(fd, &m);
+			while (done < total) {
+				size_t w = kbuf_map_write(&m, buf, msgsize);
+
+				if (!w)
+					sched_yield();
+				done += w;
+			}
+		} else if (transport == T_PIPE) {
+			close(pipefd[0]);
+			for (i = 0; i < nmsg; i++)
+				if (write(pipefd[1], buf, msgsize) != (ssize_t)msgsize)
+					break;
+			close(pipefd[1]);
+		} else {
+			int fd = open(dev, O_WRONLY);
+
+			for (i = 0; i < nmsg; i++)
+				if (write(fd, buf, msgsize) != (ssize_t)msgsize)
+					break;
+			close(fd);
+		}
+		_exit(0);
+	}
+
+	/* consumer */
+	{
+		unsigned char *buf = malloc(msgsize);
+		uint64_t i;
+
+		pin_to_cpu(1);
+		if (transport == T_MMAP) {
+			struct kbuf_map m = { 0 };
+			int fd = open("/dev/kbuf0", O_RDWR);
+			uint64_t done = 0;
+
+			kbuf_map_open(fd, &m);
+			kbuf_map_reset(&m);
+			while (done < total) {
+				size_t r = kbuf_map_read(&m, buf, msgsize);
+
+				if (!r)
+					sched_yield();
+				done += r;
+			}
+		} else if (transport == T_PIPE) {
+			close(pipefd[1]);
+			for (i = 0; i < nmsg; i++)
+				if (read(pipefd[0], buf, msgsize) != (ssize_t)msgsize)
+					break;
+			close(pipefd[0]);
+		} else {
+			int fd = open(dev, O_RDONLY);
+
+			for (i = 0; i < nmsg; i++)
+				if (read(fd, buf, msgsize) != (ssize_t)msgsize)
+					break;
+			close(fd);
+		}
+		free(buf);
+	}
+	waitpid(pid, NULL, 0);
+	return now_sec() - t0;
+}
+
+static void throughput(uint64_t total, int runs)
+{
+	static const unsigned int sizes[] = { 64, 256, 1024, 4096, 16384 };
+	unsigned int si;
+	int t, r;
+
+	printf("\n## Throughput (MB/s), %llu MiB per run, %d runs (min/avg/max)\n",
+	       (unsigned long long)(total >> 20), runs);
+	printf("%-8s", "size");
+	for (t = 0; t < T_COUNT; t++)
+		printf("%18s", t_name[t]);
+	printf("\n");
+
+	for (si = 0; si < sizeof(sizes) / sizeof(sizes[0]); si++) {
+		printf("%-8u", sizes[si]);
+		for (t = 0; t < T_COUNT; t++) {
+			double mb = total / (1024.0 * 1024.0);
+			double best = 1e30, worst = 0, sum = 0;
+			int ok = 1;
+
+			for (r = 0; r < runs; r++) {
+				double s = run_once(t, sizes[si], total);
+				double rate;
+
+				if (s < 0) {
+					ok = 0;
+					break;
+				}
+				rate = mb / s;
+				if (rate < best)
+					best = rate;
+				if (rate > worst)
+					worst = rate;
+				sum += rate;
+			}
+			if (ok)
+				printf("  %5.0f/%5.0f/%5.0f", best, sum / runs, worst);
+			else
+				printf("%18s", "n/a");
+		}
+		printf("\n");
+	}
+}
+
+static int cmp_u64(const void *a, const void *b)
+{
+	uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
+
+	return (x > y) - (x < y);
+}
+
+/* One-way produce->consume latency on the mmap ring (8-byte timestamps). */
+static void latency(int samples)
+{
+	uint64_t *lat;
+	int fd, i;
+	struct kbuf_map m = { 0 };
+	pid_t pid;
+
+	lat = mmap(NULL, samples * sizeof(uint64_t), PROT_READ | PROT_WRITE,
+		   MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	if (lat == MAP_FAILED)
+		return;
+
+	fd = open("/dev/kbuf0", O_RDWR);
+	if (fd < 0 || kbuf_map_open(fd, &m) != 0)
+		return;
+	kbuf_map_reset(&m);
+
+	pid = fork();
+	if (pid == 0) {
+		uint64_t ts;
+
+		pin_to_cpu(0);
+		for (i = 0; i < samples; i++) {
+			ts = now_ns();
+			while (kbuf_map_write(&m, &ts, sizeof(ts)) == 0)
+				;
 		}
 		_exit(0);
 	}
 	pin_to_cpu(1);
-	while (done < total) {
-		size_t r = kbuf_map_read(&m, buf, CHUNK);
+	for (i = 0; i < samples; i++) {
+		uint64_t ts;
 
-		if (!r)
-			sched_yield();
-		done += r;
+		while (kbuf_map_read(&m, &ts, sizeof(ts)) == 0)
+			;
+		lat[i] = now_ns() - ts;
 	}
 	waitpid(pid, NULL, 0);
 
-	kbuf_map_close(&m);
-	close(fd);
+	qsort(lat, samples, sizeof(uint64_t), cmp_u64);
+	printf("\n## Latency (mmap ring, one-way, ns), %d samples\n", samples);
+	printf("  p50=%llu  p90=%llu  p99=%llu  max=%llu\n",
+	       (unsigned long long)lat[samples / 2],
+	       (unsigned long long)lat[(int)(samples * 0.90)],
+	       (unsigned long long)lat[(int)(samples * 0.99)],
+	       (unsigned long long)lat[samples - 1]);
+}
+
+/* False sharing: two cores increment counters on the same vs separate lines. */
+struct fs_shared {
+	volatile uint64_t a;
+	volatile uint64_t b;			/* adjacent: shares a's line  */
+	char pad[128];
+	volatile uint64_t c;
+	char pad2[128];
+	volatile uint64_t d;			/* separate line from c        */
+};
+
+static double fs_run(volatile uint64_t *x, volatile uint64_t *y, uint64_t iters)
+{
+	double t0 = now_sec();
+	pid_t pid = fork();
+	uint64_t i;
+
+	if (pid == 0) {
+		pin_to_cpu(0);
+		for (i = 0; i < iters; i++)
+			(*x)++;
+		_exit(0);
+	}
+	pin_to_cpu(1);
+	for (i = 0; i < iters; i++)
+		(*y)++;
+	waitpid(pid, NULL, 0);
 	return now_sec() - t0;
 }
 
-/* ---- syscall path ---- */
-static double bench_syscall(uint64_t total)
+static void falsesharing(uint64_t iters)
 {
-	uint64_t msgs = total / CHUNK;
-	double t0;
-	pid_t pid;
+	struct fs_shared *s = mmap(NULL, sizeof(*s), PROT_READ | PROT_WRITE,
+				   MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	double shared, separate;
 
-	t0 = now_sec();
-	pid = fork();
-	if (pid == 0) {
-		unsigned char buf[CHUNK];
-		uint64_t i;
-		int fd = open("/dev/kbuf1", O_WRONLY);
+	if (s == MAP_FAILED)
+		return;
+	shared = fs_run(&s->a, &s->b, iters);		/* same cache line   */
+	separate = fs_run(&s->c, &s->d, iters);		/* different lines   */
 
-		pin_to_cpu(0);
-		memset(buf, 0xa5, sizeof(buf));
-		for (i = 0; i < msgs; i++)
-			if (write(fd, buf, CHUNK) != CHUNK)
-				break;
-		close(fd);
-		_exit(0);
-	}
-	unsigned char buf[CHUNK];
-	uint64_t i;
-	int fd = open("/dev/kbuf1", O_RDONLY);
-
-	pin_to_cpu(1);
-	for (i = 0; i < msgs; i++)
-		if (read(fd, buf, CHUNK) != CHUNK)
-			break;
-	close(fd);
-	waitpid(pid, NULL, 0);
-	return now_sec() - t0;
+	printf("\n## False sharing, %llu increments/core\n",
+	       (unsigned long long)iters);
+	printf("  same line     : %.3f s\n", shared);
+	printf("  separate lines: %.3f s\n", separate);
+	printf("  speedup from separation: %.2fx\n", shared / separate);
 }
 
 int main(int argc, char *argv[])
 {
-	uint64_t total = (argc > 1) ? strtoull(argv[1], NULL, 10) : (64ULL << 20);
-	double mb = total / (1024.0 * 1024.0);
-	double tm, ts;
+	int quick = (argc > 1 && strcmp(argv[1], "quick") == 0);
+	uint64_t total = quick ? (8ULL << 20) : (64ULL << 20);
+	int runs = quick ? 2 : 5;
+	int lat_samples = quick ? 2000 : 20000;
+	uint64_t fs_iters = quick ? (20ULL << 20) : (200ULL << 20);
 
-	printf("=== kbuf throughput: %.0f MiB, %u-byte chunks ===\n", mb, CHUNK);
-
-	tm = bench_mmap(total);
-	if (tm < 0)
-		return 1;
-	printf("  mmap zero-copy : %7.1f MB/s  (%.3f s)\n", mb / tm, tm);
-
-	ts = bench_syscall(total);
-	printf("  read()/write() : %7.1f MB/s  (%.3f s)\n", mb / ts, ts);
-
-	printf("  speedup (mmap / syscall): %.2fx\n", ts / tm);
+	printf("=== kbuf benchmarks (%s) ===\n", quick ? "quick" : "full");
+	throughput(total, runs);
+	latency(lat_samples);
+	falsesharing(fs_iters);
 	return 0;
 }

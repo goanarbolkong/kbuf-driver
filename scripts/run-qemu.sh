@@ -163,8 +163,8 @@ fi
 
 # Throughput benchmark (informational — numbers from a VM are illustrative).
 if [ -x /bench/kbuf_bench ]; then
-	echo "--- kbuf_bench (mmap vs syscall) ---"
-	if timeout 40 /bench/kbuf_bench; then echo "kbuf_bench: OK"; else echo "kbuf_bench: FAIL"; rc=1; fi
+	echo "--- kbuf_bench (quick) ---"
+	if timeout 60 /bench/kbuf_bench quick; then echo "kbuf_bench: OK"; else echo "kbuf_bench: FAIL"; rc=1; fi
 fi
 
 echo "--- producer fills 8 slots ---"
