@@ -61,7 +61,7 @@ echo "run-qemu: building module + tests"
 make -C "$HERE" modules >/dev/null
 
 rm -rf "$ROOT"
-mkdir -p "$ROOT"/bin "$ROOT"/tests "$ROOT"/proc "$ROOT"/sys "$ROOT"/dev
+mkdir -p "$ROOT"/bin "$ROOT"/tests "$ROOT"/bench "$ROOT"/proc "$ROOT"/sys "$ROOT"/dev
 
 cp "$BB" "$ROOT/bin/busybox"
 chmod +x "$ROOT/bin/busybox"
@@ -76,6 +76,11 @@ for src in "$HERE"/tests/*.c; do
 	[ -e "$src" ] || continue
 	name="$(basename "${src%.c}")"
 	gcc -static -O2 -I"$HERE/include" -o "$ROOT/tests/$name" "$src"
+done
+for src in "$HERE"/bench/*.c; do
+	[ -e "$src" ] || continue
+	name="$(basename "${src%.c}")"
+	gcc -static -O2 -I"$HERE/include" -o "$ROOT/bench/$name" "$src"
 done
 
 # --- /init: the VM's PID 1 ---------------------------------------------------
@@ -132,6 +137,17 @@ fi
 if [ -x /tests/test_spsc ]; then
 	echo "--- test_spsc (lock-free stress) ---"
 	if timeout 40 /tests/test_spsc; then echo "test_spsc: OK"; else echo "test_spsc: FAIL"; rc=1; fi
+fi
+
+if [ -x /tests/test_mmap ]; then
+	echo "--- test_mmap (zero-copy stress) ---"
+	if timeout 40 /tests/test_mmap; then echo "test_mmap: OK"; else echo "test_mmap: FAIL"; rc=1; fi
+fi
+
+# Throughput benchmark (informational — numbers from a VM are illustrative).
+if [ -x /bench/kbuf_bench ]; then
+	echo "--- kbuf_bench (mmap vs syscall) ---"
+	if timeout 40 /bench/kbuf_bench; then echo "kbuf_bench: OK"; else echo "kbuf_bench: FAIL"; rc=1; fi
 fi
 
 echo "--- producer fills 8 slots ---"

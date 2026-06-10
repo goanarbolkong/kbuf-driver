@@ -76,6 +76,14 @@ struct kbuf_dev {
 
 	int                    mode;		/* enum kbuf_mode              */
 
+	/*
+	 * mmap zero-copy ring (Phase 6): vmalloc_user buffers shared with user
+	 * space. mmap_ctrl is one page (struct kbuf_mmap_ctrl); mmap_data is
+	 * KBUF_MMAP_CAPACITY bytes, mapped twice by the fault handler.
+	 */
+	void                  *mmap_ctrl;
+	void                  *mmap_data;
+
 	wait_queue_head_t      read_wq;		/* readers sleep when empty    */
 	wait_queue_head_t      write_wq;	/* writers sleep when full     */
 	struct mutex           lock;
@@ -113,5 +121,10 @@ void kbuf_proc_unregister(void);
 
 /* ioctl dispatch - src/kbuf_ioctl.c */
 long kbuf_ioctl(struct file *filp, unsigned int cmd, unsigned long arg);
+
+/* mmap zero-copy ring - src/kbuf_mmap.c */
+int  kbuf_mmap_dev_alloc(struct kbuf_dev *dev);
+void kbuf_mmap_dev_free(struct kbuf_dev *dev);
+int  kbuf_mmap(struct file *filp, struct vm_area_struct *vma);
 
 #endif /* _KBUF_INTERNAL_H */

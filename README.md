@@ -14,15 +14,17 @@ the running log of bugs and fixes in [`docs/DEBUGGING.md`](docs/DEBUGGING.md).
 ## Layout
 
 ```
-include/kbuf.h        user/kernel ABI (ioctl numbers, kbuf_stats)
-src/kbuf_main.c       module lifecycle + file operations
-src/kbuf_ring.c       circular-buffer core (slot copy, index advance)
+include/kbuf.h        user/kernel ABI (ioctl numbers, kbuf_stats, mmap ctrl)
+include/libkbuf.h     user-space lib for the mmap zero-copy ring (SPSC)
+src/kbuf_main.c       module lifecycle + file operations (blocking + SPSC)
+src/kbuf_ring.c       circular-buffer core: blocking + lock-free SPSC mechanics
 src/kbuf_proc.c       /proc/kbuf_status
-src/kbuf_ioctl.c      ioctl dispatch
+src/kbuf_ioctl.c      ioctl dispatch (stats, resize, reset, mode)
+src/kbuf_mmap.c       mmap + magic-ring double-mapping fault handler
 src/kbuf_internal.h   in-kernel types and cross-file prototypes
-tests/                user-space functional tests
-bench/                throughput/latency benchmarks (later phase)
-docs/                 DESIGN.md, DEBUGGING.md, BENCHMARKS.md
+tests/                user-space functional + stress tests
+bench/                throughput benchmarks (kbuf_bench: mmap vs syscall)
+docs/                 DESIGN.md, DEBUGGING.md, BENCHMARKS.md (Phase 9)
 scripts/              QEMU boot-test harness, host signing helper
 ```
 
@@ -50,7 +52,7 @@ the module to be MOK-signed first.
 | 3 | ioctl UAPI (resize, stats, reset, mode) | ✅ done (verified under QEMU) |
 | 4 | Multiple instances (N minors, `ndevices=`) | ✅ done (verified under QEMU) |
 | 5 | Lock-free SPSC mode | ✅ done (verified under QEMU) |
-| 6 | mmap zero-copy ring | planned |
+| 6 | mmap zero-copy ring (magic ring + libkbuf) | ✅ done (verified under QEMU) |
 | 7 | debugfs + tracepoints | planned |
 | 8 | kselftest suite + CI | CI stub in place |
 | 9 | Benchmark report | planned |

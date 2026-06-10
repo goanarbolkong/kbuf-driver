@@ -18,6 +18,11 @@ tests/test_producer
 tests/test_consumer
 tests/test_nonblock
 tests/test_poll
+tests/test_ioctl
+tests/test_multi
+tests/test_spsc
+tests/test_mmap
+bench/kbuf_bench
 bench/*.bin
 
 # QEMU harness build dir (kernel image, initramfs, console log)

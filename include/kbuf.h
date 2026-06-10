@@ -45,6 +45,27 @@ struct kbuf_stats {
 	__u32 peak_count;	/* high-water mark of full slots            */
 };
 
+/*
+ * mmap zero-copy ring (Phase 6).
+ *
+ * The mmap region is one control page followed by the data ring mapped twice
+ * back-to-back (the "magic ring buffer"), so a record that wraps the end of the
+ * ring is still contiguous in the mapping. Map exactly
+ *   page_size + 2 * KBUF_MMAP_CAPACITY
+ * bytes at offset 0. head and tail are free-running byte indices; the slot is
+ * (index & (KBUF_MMAP_CAPACITY - 1)). One producer updates head, one consumer
+ * updates tail, using acquire/release atomics in user space (see libkbuf.h).
+ */
+#define KBUF_MMAP_CAPACITY (64u * 1024u)	/* data ring bytes; power of two */
+
+struct kbuf_mmap_ctrl {
+	__u64 head;		/* producer write index (bytes, free-running)  */
+	__u64 _pad0[7];		/* keep head and tail on separate cache lines  */
+	__u64 tail;		/* consumer read index (bytes, free-running)   */
+	__u64 _pad1[7];
+	__u32 capacity;		/* == KBUF_MMAP_CAPACITY                       */
+};
+
 #define KBUF_IOC_MAGIC 'k'
 
 #define KBUF_IOCRESIZE	_IOW(KBUF_IOC_MAGIC, 1, struct kbuf_resize)

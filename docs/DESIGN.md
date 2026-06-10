@@ -196,6 +196,54 @@ strict FIFO order and byte-for-byte integrity, and exercising the wait-queue
 fallback heavily (the run logs thousands of producer sleeps). It restores
 blocking mode before exiting.
 
+## 7. mmap zero-copy ring — the "magic ring buffer" (Phase 6)
+
+**Decision.** Give each device an mmap-able byte ring that user space drives
+without syscalls on the data path. Two `vmalloc_user` buffers per device: a
+one-page control block (`struct kbuf_mmap_ctrl`: head, tail, capacity) and a
+`KBUF_MMAP_CAPACITY`-byte (64 KiB) data ring. `.mmap` exposes them as a single
+region laid out `[ctrl page][data][data]`.
+
+**The magic double mapping.** The data buffer is mapped *twice*, back to back.
+The fault handler (`kbuf_vm_fault`) reduces the data page offset modulo the data
+page count, so both virtual copies resolve to the same physical pages. A record
+that wraps the end of the ring is therefore contiguous in the second copy, and
+user space copies it with a single `memcpy` — no split at the boundary. Using a
+`.fault` handler that returns `vmf->page` (via `vmalloc_to_page` + `get_page`)
+is what makes the N-fold aliasing trivial; `remap_vmalloc_range` maps a region
+once and cannot alias.
+
+**Why it is shared.** Each `/dev/kbufN` is one `struct kbuf_dev`, so every
+process that mmaps it faults to the *same* vmalloc pages. A producer and a
+consumer in different processes thus share one ring with no extra setup — and a
+child inherits the `MAP_SHARED` mapping across `fork()`.
+
+**User-space SPSC (`include/libkbuf.h`).** head and tail are free-running byte
+indices (slot = `index & (capacity - 1)`, capacity a power of two). The producer
+publishes head with a release store after its `memcpy`; the consumer observes it
+with an acquire load (mirror for tail). The header uses the GCC/Clang `__atomic`
+builtins — the C11 acquire/release model applied directly to the shared plain
+`__u64` fields. head and tail sit on separate cache lines in the control page to
+avoid false sharing (measured in Phase 9). Single producer + single consumer is
+the contract, matching the in-kernel SPSC mode.
+
+**"Zero-copy" scope, stated honestly.** The data path takes no syscall and no
+copy across the user/kernel boundary; the producer still `memcpy`s its payload
+into the shared ring (and the consumer out). It is kernel-bypass for the
+transfer, not elimination of the application's own copy.
+
+**Lifetime.** The buffers are allocated per device at module load and freed in
+teardown (and on every init error path). The mapping uses normal struct pages,
+so unmapping and module unload are clean — verified by `rmmod` after the stress
+test with no leak or oops.
+
+**Test + benchmark.** `tests/test_mmap.c` forks a producer/consumer pinned to
+different CPUs and streams 4 MiB through the 64 KiB ring (~64 wraps), verifying
+every byte by absolute position to catch any loss, reorder, or wrap miscopy.
+`bench/kbuf_bench.c` compares mmap throughput against the `read()`/`write()`
+slot path; in-VM it shows roughly an order-of-magnitude speedup (illustrative —
+the rigorous report with methodology is Phase 9).
+
 ## Test harness (QEMU)
 
 `scripts/run-qemu.sh` builds a busybox initramfs containing `kbuf.ko` and

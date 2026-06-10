@@ -240,6 +240,7 @@ static const struct file_operations kbuf_fops = {
 	.poll           = kbuf_poll,
 	.unlocked_ioctl = kbuf_ioctl,
 	.compat_ioctl   = compat_ptr_ioctl,
+	.mmap           = kbuf_mmap,
 };
 
 /* Tear down the first @n fully-created devices (used on exit and unwind). */
@@ -252,6 +253,7 @@ static void kbuf_teardown_devices(unsigned int n)
 
 		device_destroy(kbuf_class, dev->devno);
 		cdev_del(&dev->cdev);
+		kbuf_mmap_dev_free(dev);
 		kbuf_free_slots(dev->slots, dev->num_buffers);
 	}
 }
@@ -300,11 +302,19 @@ static int __init kbuf_init(void)
 			goto err_devices;
 		}
 
+		ret = kbuf_mmap_dev_alloc(dev);
+		if (ret < 0) {
+			pr_err("kbuf: mmap alloc failed for kbuf%u (%d)\n", i, ret);
+			kbuf_free_slots(dev->slots, dev->num_buffers);
+			goto err_devices;
+		}
+
 		cdev_init(&dev->cdev, &kbuf_fops);
 		dev->cdev.owner = THIS_MODULE;
 		ret = cdev_add(&dev->cdev, dev->devno, 1);
 		if (ret < 0) {
 			pr_err("kbuf: cdev_add failed for kbuf%u (%d)\n", i, ret);
+			kbuf_mmap_dev_free(dev);
 			kbuf_free_slots(dev->slots, dev->num_buffers);
 			goto err_devices;
 		}
@@ -315,6 +325,7 @@ static int __init kbuf_init(void)
 			ret = PTR_ERR(dev->dev);
 			pr_err("kbuf: device_create failed for kbuf%u (%d)\n", i, ret);
 			cdev_del(&dev->cdev);
+			kbuf_mmap_dev_free(dev);
 			kbuf_free_slots(dev->slots, dev->num_buffers);
 			goto err_devices;
 		}
