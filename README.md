@@ -22,6 +22,7 @@ src/kbuf_proc.c       /proc/kbuf_status
 src/kbuf_ioctl.c      ioctl dispatch (stats, resize, reset, mode)
 src/kbuf_mmap.c       mmap + magic-ring double-mapping fault handler
 src/kbuf_debugfs.c    /sys/kernel/debug/kbuf/kbufN/ counter files
+src/kbuf_ctl.c        /dev/kbuf-ctl: runtime create/destroy (kref lifetime)
 src/kbuf_trace.h      TRACE_EVENT definitions (perf record -e 'kbuf:*')
 src/kbuf_internal.h   in-kernel types and cross-file prototypes
 tests/                user-space functional + stress tests
@@ -53,6 +54,7 @@ the module to be MOK-signed first.
 | 2 | poll/epoll + QEMU test harness | ✅ done (verified under QEMU) |
 | 3 | ioctl UAPI (resize, stats, reset, mode) | ✅ done (verified under QEMU) |
 | 4 | Multiple instances (N minors, `ndevices=`) | ✅ done (verified under QEMU) |
+| 4+ | Dynamic create/destroy via `/dev/kbuf-ctl` (kref) | ✅ done (stretch, verified under QEMU) |
 | 5 | Lock-free SPSC mode | ✅ done (verified under QEMU) |
 | 6 | mmap zero-copy ring (magic ring + libkbuf) | ✅ done (verified under QEMU) |
 | 7 | debugfs + tracepoints | ✅ done (verified under QEMU) |

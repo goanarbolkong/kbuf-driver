@@ -110,6 +110,7 @@ fi
 ndev=$(ls -d /dev/kbuf[0-9]* 2>/dev/null | wc -l)
 echo "device nodes: $ndev"
 [ "$ndev" -eq 4 ] && echo "4 devices (default ndevices): OK" || { echo "expected 4 devices, got $ndev"; rc=1; }
+[ -e /dev/kbuf-ctl ] && echo "/dev/kbuf-ctl present: OK" || { echo "/dev/kbuf-ctl MISSING"; rc=1; }
 cat /proc/kbuf_status
 
 # Observability (Phase 7): mount debugfs and enable the kbuf tracepoints up
@@ -144,6 +145,11 @@ fi
 if [ -x /tests/test_edge ]; then
 	echo "--- test_edge ---"
 	if timeout 20 /tests/test_edge; then echo "test_edge: OK"; else echo "test_edge: FAIL"; rc=1; fi
+fi
+
+if [ -x /tests/test_ctl ]; then
+	echo "--- test_ctl (dynamic devices) ---"
+	if timeout 20 /tests/test_ctl; then echo "test_ctl: OK"; else echo "test_ctl: FAIL"; rc=1; fi
 fi
 
 if [ -x /tests/test_multi ]; then

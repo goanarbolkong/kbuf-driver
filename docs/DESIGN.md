@@ -290,6 +290,36 @@ real end-to-end check, reusing the same `scripts/run-qemu.sh` used locally. The
 matrix is structured for multiple kernel-header versions; expanding it beyond
 the runner's own kernel needs a runner with those headers installed.
 
+## 10. Dynamic devices — /dev/kbuf-ctl (Phase 4 stretch)
+
+**Decision.** A misc control device `/dev/kbuf-ctl` creates and destroys kbuf
+devices at runtime: `KBUF_CTL_CREATE` returns a new id N (node `/dev/kbufdN`),
+`KBUF_CTL_DESTROY` tears one down. Dynamic devices are heap-allocated, tracked
+on a mutex-protected list, and take minors from an `ida` over the dynamic range
+reserved at load (the minors just past the static devices).
+
+**kref lifetime — destroy while open.** Each dynamic device has a `kref`. Create
+takes the initial "registered" reference; `open()` takes one (under the list
+lock, so it cannot race a concurrent free); `release()` drops it; destroy drops
+the registered one. Destroy therefore only removes the node (`device_destroy` +
+`cdev_del`, blocking new opens) — if a process still has the device open, the
+ring stays alive and readable until that process closes, when the last
+`kref_put` frees it. `tests/test_ctl.c` asserts exactly this: data written
+before destroy is still readable through the open fd afterwards.
+
+**Standalone cdev, not embedded.** Dynamic devices use `cdev_alloc()` rather
+than an embedded `cdev_init()`. The VFS calls `cdev_put()` *after* `->release`,
+so freeing an embedded cdev in our kref `->release` is a use-after-free (see
+docs/DEBUGGING.md §4). With a standalone cdev the kernel owns and frees the cdev
+on its own kobject schedule, independent of our kref. Consequently `open()`
+resolves the device by minor (static minors index the array; higher minors are
+looked up in the dynamic list) instead of `container_of`.
+
+**Teardown.** Module exit deregisters the control node first (no new creates),
+then tears down any devices the user left behind, draining the list under the
+lock and `kref_put`-ing each. Dynamic devices are not shown in `/proc` or
+debugfs (those iterate the static array) — a deliberate scope limit.
+
 ## Test harness (QEMU)
 
 `scripts/run-qemu.sh` builds a busybox initramfs containing `kbuf.ko` and

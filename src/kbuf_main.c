@@ -47,8 +47,8 @@ MODULE_PARM_DESC(ndevices, "number of /dev/kbufN devices to create (default 4)")
 struct kbuf_dev *kbuf_devices;
 unsigned int     kbuf_ndevices;
 
-static struct class *kbuf_class;
-static dev_t         kbuf_base_devno;
+struct class *kbuf_class;
+dev_t         kbuf_base_devno;
 
 static char *kbuf_devnode(const struct device *dev, umode_t *mode)
 {
@@ -59,7 +59,26 @@ static char *kbuf_devnode(const struct device *dev, umode_t *mode)
 
 static int kbuf_open(struct inode *inode, struct file *filp)
 {
-	struct kbuf_dev *dev = container_of(inode->i_cdev, struct kbuf_dev, cdev);
+	unsigned int minor = iminor(inode);
+	struct kbuf_dev *dev;
+
+	/*
+	 * Resolve the device by minor rather than container_of: dynamic devices
+	 * use a standalone cdev_alloc()'d cdev (kernel-managed lifetime) and are
+	 * not embedded in the kbuf_dev, so container_of would be wrong. Static
+	 * devices occupy minors [0, ndevices); the rest are the dynamic pool.
+	 */
+	if (minor < kbuf_ndevices) {
+		dev = &kbuf_devices[minor];
+	} else {
+		/*
+		 * kref_get under the dynamic-list lock, so a racing destroy
+		 * cannot free the device between lookup and pin.
+		 */
+		dev = kbuf_dyn_get(minor - kbuf_ndevices);
+		if (!dev)
+			return -ENODEV;
+	}
 
 	filp->private_data = dev;
 	pr_info("kbuf: %s opened (pid=%d, flags=0x%x)\n",
@@ -72,6 +91,8 @@ static int kbuf_release(struct inode *inode, struct file *filp)
 	struct kbuf_dev *dev = filp->private_data;
 
 	pr_info("kbuf: %s closed (pid=%d)\n", dev_name(dev->dev), current->pid);
+	if (dev->dynamic)
+		kref_put(&dev->ref, kbuf_dev_release);
 	return 0;
 }
 
@@ -248,7 +269,7 @@ static __poll_t kbuf_poll(struct file *filp, struct poll_table_struct *wait)
 	return mask;
 }
 
-static const struct file_operations kbuf_fops = {
+const struct file_operations kbuf_fops = {
 	.owner          = THIS_MODULE,
 	.open           = kbuf_open,
 	.release        = kbuf_release,
@@ -288,7 +309,12 @@ static int __init kbuf_init(void)
 	if (!kbuf_devices)
 		return -ENOMEM;
 
-	ret = alloc_chrdev_region(&kbuf_base_devno, 0, kbuf_ndevices, KBUF_DEVICE_NAME);
+	/*
+	 * Reserve minors for the static devices plus the dynamic pool that
+	 * /dev/kbuf-ctl carves devices out of.
+	 */
+	ret = alloc_chrdev_region(&kbuf_base_devno, 0,
+				  kbuf_ndevices + KBUF_DYN_MAX, KBUF_DEVICE_NAME);
 	if (ret < 0) {
 		pr_err("kbuf: alloc_chrdev_region failed (%d)\n", ret);
 		goto err_free;
@@ -352,15 +378,25 @@ static int __init kbuf_init(void)
 		pr_warn("kbuf: proc_create failed (non-fatal)\n");
 	kbuf_debugfs_register();
 
-	pr_info("kbuf: loaded - %u devices /dev/kbuf0..%u, /proc/kbuf_status\n",
+	ret = kbuf_ctl_register();
+	if (ret < 0) {
+		pr_err("kbuf: control device registration failed (%d)\n", ret);
+		goto err_ctl;
+	}
+
+	pr_info("kbuf: loaded - %u devices /dev/kbuf0..%u, /dev/kbuf-ctl, /proc/kbuf_status\n",
 		kbuf_ndevices, kbuf_ndevices - 1);
 	return 0;
 
+err_ctl:
+	kbuf_debugfs_unregister();
+	kbuf_proc_unregister();
+	i = kbuf_ndevices;		/* all static devices were created */
 err_devices:
 	kbuf_teardown_devices(i);	/* devices [0, i) are fully created */
 	class_destroy(kbuf_class);
 err_region:
-	unregister_chrdev_region(kbuf_base_devno, kbuf_ndevices);
+	unregister_chrdev_region(kbuf_base_devno, kbuf_ndevices + KBUF_DYN_MAX);
 err_free:
 	kfree(kbuf_devices);
 	return ret;
@@ -368,11 +404,12 @@ err_free:
 
 static void __exit kbuf_exit(void)
 {
+	kbuf_ctl_unregister();		/* tear down any remaining dynamic devices */
 	kbuf_debugfs_unregister();
 	kbuf_proc_unregister();
 	kbuf_teardown_devices(kbuf_ndevices);
 	class_destroy(kbuf_class);
-	unregister_chrdev_region(kbuf_base_devno, kbuf_ndevices);
+	unregister_chrdev_region(kbuf_base_devno, kbuf_ndevices + KBUF_DYN_MAX);
 	kfree(kbuf_devices);
 	pr_info("kbuf: unloaded\n");
 }

@@ -75,4 +75,14 @@ struct kbuf_mmap_ctrl {
 
 #define KBUF_IOC_MAXNR 4
 
+/*
+ * Control device (/dev/kbuf-ctl) — create and destroy kbuf devices at runtime.
+ * CREATE returns the new device id N (its node is /dev/kbufdN); DESTROY takes
+ * an id. A device destroyed while still open stays alive until its last close
+ * (kref), but accepts no new opens.
+ */
+#define KBUF_CTL_MAGIC 'K'
+#define KBUF_CTL_CREATE  _IOR(KBUF_CTL_MAGIC, 1, int)	/* out: new device id  */
+#define KBUF_CTL_DESTROY _IOW(KBUF_CTL_MAGIC, 2, int)	/* in:  device id      */
+
 #endif /* _UAPI_KBUF_H */

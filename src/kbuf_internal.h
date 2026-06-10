@@ -11,6 +11,8 @@
 #include <linux/cdev.h>
 #include <linux/device.h>
 #include <linux/fs.h>
+#include <linux/kref.h>
+#include <linux/list.h>
 #include <linux/mutex.h>
 #include <linux/proc_fs.h>
 #include <linux/types.h>
@@ -31,6 +33,9 @@
 /* Number of /dev/kbufN devices, set by the ndevices module param. */
 #define KBUF_DEFAULT_NDEVICES 4
 #define KBUF_MAX_NDEVICES     64
+
+/* Max devices that /dev/kbuf-ctl can create at runtime (/dev/kbufdN). */
+#define KBUF_DYN_MAX          64
 
 struct kbuf_slot {
 	char  *data;	/* heap buffer of dev->buffer_size bytes */
@@ -87,14 +92,29 @@ struct kbuf_dev {
 	wait_queue_head_t      read_wq;		/* readers sleep when empty    */
 	wait_queue_head_t      write_wq;	/* writers sleep when full     */
 	struct mutex           lock;
-	struct cdev            cdev;		/* container_of target in open()*/
+	struct cdev            cdev;		/* static devices: embedded cdev   */
+	struct cdev           *cdevp;		/* dynamic devices: cdev_alloc()'d */
 	dev_t                  devno;
 	struct device         *dev;
+
+	/*
+	 * Dynamic devices (created via /dev/kbuf-ctl) only. Static devices in
+	 * the array leave these zero and are never kref-managed.
+	 */
+	bool                   dynamic;
+	int                    minor_off;	/* ida offset within the dyn range */
+	struct kref            ref;		/* freed when it reaches zero      */
+	struct list_head       list;		/* on the dynamic device list      */
 };
 
-/* The device array and its length, owned by kbuf_main.c. */
+/* The static device array and its length, owned by kbuf_main.c. */
 extern struct kbuf_dev *kbuf_devices;
 extern unsigned int     kbuf_ndevices;
+
+/* Shared with kbuf_ctl.c for building dynamic devices. */
+extern struct class               *kbuf_class;
+extern dev_t                       kbuf_base_devno;
+extern const struct file_operations kbuf_fops;
 
 /* ring core - src/kbuf_ring.c */
 struct kbuf_slot *kbuf_alloc_slots(unsigned int num_buffers, unsigned int buffer_size);
@@ -130,5 +150,11 @@ int  kbuf_mmap(struct file *filp, struct vm_area_struct *vma);
 /* debugfs counters - src/kbuf_debugfs.c */
 void kbuf_debugfs_register(void);
 void kbuf_debugfs_unregister(void);
+
+/* dynamic devices / control device - src/kbuf_ctl.c */
+void kbuf_dev_release(struct kref *ref);	/* kref release for dynamic devs */
+struct kbuf_dev *kbuf_dyn_get(int minor_off);	/* lookup + kref_get, or NULL    */
+int  kbuf_ctl_register(void);
+void kbuf_ctl_unregister(void);
 
 #endif /* _KBUF_INTERNAL_H */

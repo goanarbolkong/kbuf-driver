@@ -74,3 +74,43 @@ module with the kernel's `scripts/sign-file` before loading. The private key
 > (`scripts/run-qemu.sh`), which sidesteps host signing and protects the
 > workstation from a faulty module — host loading is reserved for known-good
 > builds.
+
+---
+
+## 4. Use-after-free unloading a dynamic device while open
+
+**Symptom.** `test_ctl` created a device via `/dev/kbuf-ctl`, opened it, then
+destroyed it while the fd was still open. Every data check passed — but the
+final `close()` panicked the VM:
+
+```
+Oops: general protection fault ... RIP: module_put+0xf
+Call Trace:  cdev_put  __fput  __x64_sys_close
+```
+
+`module_put` dereferenced a poisoned pointer (`RBX = e50159f6...`).
+
+**Investigation.** The fault is in `cdev_put(inode->i_cdev)`, which `__fput`
+calls *after* `f_op->release`. So the order on the last close is: our
+`kbuf_release` runs first → `kref_put` drops the device's last reference →
+`kbuf_dev_release` `kfree()`s the `kbuf_dev` — which **embedded** `struct cdev`.
+Then the VFS runs `cdev_put` on that just-freed cdev and reads `cdev->owner`
+(for `module_put`) from freed memory.
+
+**Root cause.** The device object's lifetime (our kref) and the cdev's lifetime
+(the VFS's own kobject refcount, released only after `cdev_put`) were tied to
+the same allocation. Freeing the object in `->release` is always too early for
+an embedded cdev, because the VFS touches the cdev again after `->release`.
+
+**Fix.** Give dynamic devices a **standalone** cdev via `cdev_alloc()` instead
+of an embedded `cdev_init()`. The kernel then owns the cdev's kobject and frees
+the cdev itself after the final `cdev_put` — independent of our kref, which now
+frees only the `kbuf_dev` (ring buffers + struct). Since `open()` could no
+longer use `container_of(inode->i_cdev, ...)`, it resolves the device by minor
+instead (static minors index the array; the rest are the dynamic pool, looked
+up under the list lock with `kref_get`). Static devices keep their embedded
+cdev — they are never freed before module unload, so the race does not apply.
+
+**Why it mattered that this ran in QEMU.** A GP fault + kernel panic on the
+development workstation would have taken the machine down. The throwaway VM
+turned a fatal bug into a log line and a stack trace.
