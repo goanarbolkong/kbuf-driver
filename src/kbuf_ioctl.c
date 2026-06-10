@@ -17,6 +17,7 @@
 #include <linux/errno.h>
 #include <linux/fs.h>
 #include <linux/kernel.h>
+#include <linux/log2.h>
 #include <linux/mutex.h>
 #include <linux/sched.h>
 #include <linux/string.h>
@@ -39,7 +40,7 @@ static long kbuf_ioc_getstats(struct kbuf_dev *dev, unsigned long arg)
 	st.write_sleeps   = dev->write_sleeps;
 	st.num_buffers    = dev->num_buffers;
 	st.buffer_size    = dev->buffer_size;
-	st.cur_count      = dev->count;
+	st.cur_count      = kbuf_occupancy(dev);
 	st.peak_count     = dev->peak_count;
 	mutex_unlock(&dev->lock);
 
@@ -74,6 +75,9 @@ static long kbuf_ioc_resize(struct kbuf_dev *dev, unsigned long arg)
 		return -EINVAL;
 	if (rq.buffer_size < 1 || rq.buffer_size > KBUF_MAX_BUFFER_SIZE)
 		return -EINVAL;
+	/* SPSC masking requires a power-of-two capacity. */
+	if (dev->mode == KBUF_MODE_SPSC && !is_power_of_2(rq.num_buffers))
+		return -EINVAL;
 
 	/*
 	 * Allocate before taking the lock so the (possibly large) allocation
@@ -85,7 +89,7 @@ static long kbuf_ioc_resize(struct kbuf_dev *dev, unsigned long arg)
 		return -ENOMEM;
 
 	mutex_lock(&dev->lock);
-	if (dev->count != 0) {
+	if (kbuf_occupancy(dev) != 0) {
 		/* Refuse to discard in-flight data; caller drains first. */
 		mutex_unlock(&dev->lock);
 		kbuf_free_slots(new_slots, rq.num_buffers);
@@ -100,6 +104,8 @@ static long kbuf_ioc_resize(struct kbuf_dev *dev, unsigned long arg)
 	dev->read_pos    = 0;
 	dev->write_pos   = 0;
 	dev->count       = 0;
+	dev->prod_idx    = 0;
+	dev->cons_idx    = 0;
 	dev->peak_count  = 0;
 	mutex_unlock(&dev->lock);
 
@@ -118,11 +124,29 @@ static long kbuf_ioc_smode(struct kbuf_dev *dev, unsigned long arg)
 		return -EFAULT;
 	if (mode != KBUF_MODE_BLOCKING && mode != KBUF_MODE_SPSC)
 		return -EINVAL;
-	if (mode == KBUF_MODE_SPSC)
-		return -EOPNOTSUPP;	/* lock-free SPSC arrives in Phase 5 */
 
 	mutex_lock(&dev->lock);
-	dev->mode = mode;
+	/*
+	 * Switch only on an idle, empty ring. The mutex does not exclude an
+	 * in-flight lock-free SPSC reader/writer, so the caller must also
+	 * ensure no I/O is in progress (see docs/DESIGN.md).
+	 */
+	if (kbuf_occupancy(dev) != 0) {
+		mutex_unlock(&dev->lock);
+		return -EBUSY;
+	}
+	if (mode == KBUF_MODE_SPSC && !is_power_of_2(dev->num_buffers)) {
+		mutex_unlock(&dev->lock);
+		return -EINVAL;
+	}
+
+	/* Reset both index representations to a clean empty state. */
+	dev->read_pos  = 0;
+	dev->write_pos = 0;
+	dev->count     = 0;
+	dev->prod_idx  = 0;
+	dev->cons_idx  = 0;
+	WRITE_ONCE(dev->mode, mode);
 	mutex_unlock(&dev->lock);
 	return 0;
 }

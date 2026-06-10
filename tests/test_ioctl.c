@@ -111,16 +111,25 @@ int main(void)
 	check("0 slots rejected (EINVAL)", ioctl(fd, KBUF_IOCRESIZE, &rz) == -1 &&
 	      errno == EINVAL);
 
-	printf("=== Test 6: SMODE validation ===\n");
+	printf("=== Test 6: SMODE (blocking <-> spsc) ===\n");
+	/* Geometry here is 4x1024 (from Test 3), a power of two. */
 	mode = KBUF_MODE_BLOCKING;
 	check("set blocking ok", ioctl(fd, KBUF_IOCSMODE, &mode) == 0);
 	mode = KBUF_MODE_SPSC;
-	errno = 0;
-	check("SPSC not yet supported (EOPNOTSUPP)",
-	      ioctl(fd, KBUF_IOCSMODE, &mode) == -1 && errno == EOPNOTSUPP);
+	check("set SPSC ok (empty, pow2)", ioctl(fd, KBUF_IOCSMODE, &mode) == 0);
+	mode = KBUF_MODE_BLOCKING;
+	check("back to blocking ok", ioctl(fd, KBUF_IOCSMODE, &mode) == 0);
 	mode = 99;
 	errno = 0;
 	check("bad mode rejected (EINVAL)",
+	      ioctl(fd, KBUF_IOCSMODE, &mode) == -1 && errno == EINVAL);
+	/* SPSC needs a power-of-two capacity. */
+	rz.num_buffers = 3;
+	rz.buffer_size = 256;
+	check("resize to 3x256 (blocking) ok", ioctl(fd, KBUF_IOCRESIZE, &rz) == 0);
+	mode = KBUF_MODE_SPSC;
+	errno = 0;
+	check("SPSC rejected on non-pow2 (EINVAL)",
 	      ioctl(fd, KBUF_IOCSMODE, &mode) == -1 && errno == EINVAL);
 
 	printf("=== Test 7: unknown ioctl ===\n");

@@ -14,16 +14,25 @@ static struct proc_dir_entry *kbuf_proc_entry;
 static void kbuf_proc_show_dev(struct seq_file *m, struct kbuf_dev *dev, unsigned int idx)
 {
 	static const char * const mode_name[] = { "blocking", "spsc" };
+	unsigned int occ, rd, wr;
 
 	mutex_lock(&dev->lock);
+	occ = kbuf_occupancy(dev);
+	if (dev->mode == KBUF_MODE_SPSC) {
+		rd = dev->cons_idx & (dev->num_buffers - 1);
+		wr = dev->prod_idx & (dev->num_buffers - 1);
+	} else {
+		rd = dev->read_pos;
+		wr = dev->write_pos;
+	}
 	seq_printf(m,  "=== kbuf%u ===\n", idx);
 	seq_printf(m,  "Total slots    : %u\n", dev->num_buffers);
 	seq_printf(m,  "Slot size      : %u bytes\n", dev->buffer_size);
-	seq_printf(m,  "Full slots     : %d\n", dev->count);
-	seq_printf(m,  "Free slots     : %u\n", dev->num_buffers - dev->count);
+	seq_printf(m,  "Full slots     : %u\n", occ);
+	seq_printf(m,  "Free slots     : %u\n", dev->num_buffers - occ);
 	seq_printf(m,  "Peak full slots: %u\n", dev->peak_count);
-	seq_printf(m,  "Read  position : %d\n", dev->read_pos);
-	seq_printf(m,  "Write position : %d\n", dev->write_pos);
+	seq_printf(m,  "Read  position : %u\n", rd);
+	seq_printf(m,  "Write position : %u\n", wr);
 	seq_printf(m,  "Mode           : %s\n",
 		   dev->mode < (int)ARRAY_SIZE(mode_name) ? mode_name[dev->mode] : "?");
 	seq_printf(m,  "Msgs  produced : %llu\n", dev->msgs_produced);

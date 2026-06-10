@@ -50,10 +50,21 @@ struct kbuf_dev {
 	struct kbuf_slot      *slots;		/* num_buffers entries         */
 	unsigned int           num_buffers;
 	unsigned int           buffer_size;
-	int                    read_pos;	/* next slot to consume        */
-	int                    write_pos;	/* next slot to produce        */
-	int                    count;		/* number of full slots        */
-	unsigned int           peak_count;	/* high-water mark of count    */
+	int                    read_pos;	/* blocking: next slot to consume */
+	int                    write_pos;	/* blocking: next slot to produce */
+	int                    count;		/* blocking: number of full slots */
+
+	/*
+	 * SPSC mode (lock-free): free-running indices into slots[], masked by
+	 * (num_buffers - 1), so num_buffers must be a power of two. prod_idx is
+	 * written only by the producer, cons_idx only by the consumer; each is
+	 * published to the other side with smp_store_release / observed with
+	 * smp_load_acquire.
+	 */
+	unsigned int           prod_idx;
+	unsigned int           cons_idx;
+
+	unsigned int           peak_count;	/* high-water mark of occupancy   */
 
 	/* throughput counters (see struct kbuf_stats) */
 	u64                    bytes_produced;
@@ -81,11 +92,20 @@ extern unsigned int     kbuf_ndevices;
 struct kbuf_slot *kbuf_alloc_slots(unsigned int num_buffers, unsigned int buffer_size);
 void              kbuf_free_slots(struct kbuf_slot *slots, unsigned int num_buffers);
 
-/* The predicates and the consume/produce helpers all require dev->lock held. */
+/* Blocking mode: predicates and consume/produce all require dev->lock held. */
 bool    kbuf_ring_is_empty(const struct kbuf_dev *dev);
 bool    kbuf_ring_is_full(const struct kbuf_dev *dev);
 ssize_t kbuf_ring_consume(struct kbuf_dev *dev, char __user *ubuf, size_t count);
 ssize_t kbuf_ring_produce(struct kbuf_dev *dev, const char __user *ubuf, size_t count);
+
+/* SPSC mode: lock-free; safe with exactly one producer and one consumer. */
+bool    kbuf_spsc_is_empty(struct kbuf_dev *dev);
+bool    kbuf_spsc_is_full(struct kbuf_dev *dev);
+ssize_t kbuf_spsc_consume(struct kbuf_dev *dev, char __user *ubuf, size_t count);
+ssize_t kbuf_spsc_produce(struct kbuf_dev *dev, const char __user *ubuf, size_t count);
+
+/* Current occupancy regardless of mode (lock not required for the SPSC read). */
+unsigned int kbuf_occupancy(struct kbuf_dev *dev);
 
 /* /proc interface - src/kbuf_proc.c */
 int  kbuf_proc_register(void);

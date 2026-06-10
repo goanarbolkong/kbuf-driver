@@ -66,10 +66,10 @@ static int kbuf_release(struct inode *inode, struct file *filp)
 	return 0;
 }
 
-static ssize_t kbuf_read(struct file *filp, char __user *ubuf,
-			 size_t count, loff_t *ppos)
+/* Blocking mode: mutex-serialised ring with check-sleep-recheck on empty. */
+static ssize_t kbuf_read_blocking(struct kbuf_dev *dev, struct file *filp,
+				  char __user *ubuf, size_t count)
 {
-	struct kbuf_dev *dev = filp->private_data;
 	ssize_t ret;
 
 	if (mutex_lock_interruptible(&dev->lock))
@@ -97,10 +97,43 @@ static ssize_t kbuf_read(struct file *filp, char __user *ubuf,
 	return ret;
 }
 
-static ssize_t kbuf_write(struct file *filp, const char __user *ubuf,
-			  size_t count, loff_t *ppos)
+/*
+ * SPSC mode: lock-free fast path, with a wait-queue fallback when the ring is
+ * empty. No mutex is taken; correctness relies on a single consumer here and a
+ * single producer in kbuf_write_spsc().
+ */
+static ssize_t kbuf_read_spsc(struct kbuf_dev *dev, struct file *filp,
+			      char __user *ubuf, size_t count)
+{
+	ssize_t ret;
+
+	while (kbuf_spsc_is_empty(dev)) {
+		if (filp->f_flags & O_NONBLOCK)
+			return -EAGAIN;
+		WRITE_ONCE(dev->read_sleeps, dev->read_sleeps + 1);
+		if (wait_event_interruptible(dev->read_wq, !kbuf_spsc_is_empty(dev)))
+			return -ERESTARTSYS;
+	}
+
+	ret = kbuf_spsc_consume(dev, ubuf, count);
+	if (ret >= 0)
+		wake_up_interruptible(&dev->write_wq);	/* a slot is now free */
+	return ret;
+}
+
+static ssize_t kbuf_read(struct file *filp, char __user *ubuf,
+			 size_t count, loff_t *ppos)
 {
 	struct kbuf_dev *dev = filp->private_data;
+
+	if (READ_ONCE(dev->mode) == KBUF_MODE_SPSC)
+		return kbuf_read_spsc(dev, filp, ubuf, count);
+	return kbuf_read_blocking(dev, filp, ubuf, count);
+}
+
+static ssize_t kbuf_write_blocking(struct kbuf_dev *dev, struct file *filp,
+				   const char __user *ubuf, size_t count)
+{
 	ssize_t ret;
 
 	if (mutex_lock_interruptible(&dev->lock))
@@ -132,6 +165,39 @@ static ssize_t kbuf_write(struct file *filp, const char __user *ubuf,
 	return ret;
 }
 
+static ssize_t kbuf_write_spsc(struct kbuf_dev *dev, struct file *filp,
+			       const char __user *ubuf, size_t count)
+{
+	ssize_t ret;
+
+	/* buffer_size is stable in SPSC mode (resize requires an idle ring). */
+	if (count > dev->buffer_size)
+		count = dev->buffer_size;
+
+	while (kbuf_spsc_is_full(dev)) {
+		if (filp->f_flags & O_NONBLOCK)
+			return -EAGAIN;
+		WRITE_ONCE(dev->write_sleeps, dev->write_sleeps + 1);
+		if (wait_event_interruptible(dev->write_wq, !kbuf_spsc_is_full(dev)))
+			return -ERESTARTSYS;
+	}
+
+	ret = kbuf_spsc_produce(dev, ubuf, count);
+	if (ret >= 0)
+		wake_up_interruptible(&dev->read_wq);	/* a full slot is ready */
+	return ret;
+}
+
+static ssize_t kbuf_write(struct file *filp, const char __user *ubuf,
+			  size_t count, loff_t *ppos)
+{
+	struct kbuf_dev *dev = filp->private_data;
+
+	if (READ_ONCE(dev->mode) == KBUF_MODE_SPSC)
+		return kbuf_write_spsc(dev, filp, ubuf, count);
+	return kbuf_write_blocking(dev, filp, ubuf, count);
+}
+
 /*
  * poll/select/epoll support. We register on both wait queues so the caller is
  * woken whether a slot frees up (writable) or fills (readable); kbuf_read and
@@ -148,12 +214,19 @@ static __poll_t kbuf_poll(struct file *filp, struct poll_table_struct *wait)
 	poll_wait(filp, &dev->read_wq, wait);
 	poll_wait(filp, &dev->write_wq, wait);
 
-	mutex_lock(&dev->lock);
-	if (!kbuf_ring_is_empty(dev))
-		mask |= EPOLLIN | EPOLLRDNORM;
-	if (!kbuf_ring_is_full(dev))
-		mask |= EPOLLOUT | EPOLLWRNORM;
-	mutex_unlock(&dev->lock);
+	if (READ_ONCE(dev->mode) == KBUF_MODE_SPSC) {
+		if (!kbuf_spsc_is_empty(dev))
+			mask |= EPOLLIN | EPOLLRDNORM;
+		if (!kbuf_spsc_is_full(dev))
+			mask |= EPOLLOUT | EPOLLWRNORM;
+	} else {
+		mutex_lock(&dev->lock);
+		if (!kbuf_ring_is_empty(dev))
+			mask |= EPOLLIN | EPOLLRDNORM;
+		if (!kbuf_ring_is_full(dev))
+			mask |= EPOLLOUT | EPOLLWRNORM;
+		mutex_unlock(&dev->lock);
+	}
 
 	return mask;
 }

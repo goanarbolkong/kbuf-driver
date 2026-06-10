@@ -129,6 +129,11 @@ if [ -x /tests/test_multi ]; then
 	if timeout 20 /tests/test_multi; then echo "test_multi: OK"; else echo "test_multi: FAIL"; rc=1; fi
 fi
 
+if [ -x /tests/test_spsc ]; then
+	echo "--- test_spsc (lock-free stress) ---"
+	if timeout 40 /tests/test_spsc; then echo "test_spsc: OK"; else echo "test_spsc: FAIL"; rc=1; fi
+fi
+
 echo "--- producer fills 8 slots ---"
 if timeout 15 /tests/test_producer 8 0; then echo "producer: OK"; else echo "producer: FAIL"; rc=1; fi
 cat /proc/kbuf_status

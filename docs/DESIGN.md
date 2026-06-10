@@ -149,6 +149,53 @@ before it is fully constructed.
 create/destroy with `kref` lifetime management is not implemented here; the
 static `ndevices` set covers the Phase 4 requirement.
 
+## 6. Lock-free SPSC mode (Phase 5)
+
+**Decision.** Add a second ring discipline, selectable per device via
+`KBUF_IOCSMODE`. In `KBUF_MODE_SPSC` the data path takes no mutex: it uses
+free-running `prod_idx`/`cons_idx` into the existing slot array, with the slot
+chosen by `idx & (num_buffers - 1)` — which is why SPSC requires a power-of-two
+capacity (enforced by SMODE and RESIZE).
+
+**Memory ordering.** The producer writes the slot, then publishes the head with
+`smp_store_release(&prod_idx, prod + 1)`. The consumer observes it with
+`smp_load_acquire(&prod_idx)`; the release/acquire pair guarantees the slot
+contents are visible before the index that exposes them. The mirror image holds
+for `cons_idx`: the consumer releases it after copying out, and the producer
+acquires it before reusing a slot, so a slot is never overwritten while still
+being read. `prod_idx` is written only by the producer and `cons_idx` only by
+the consumer; each side reads its own index plainly. Correctness therefore
+relies on exactly **one producer and one consumer** — this is documented as the
+mode's contract, not enforced by the driver.
+
+**Hybrid blocking.** The fast path is lock-free, but blocking semantics are
+preserved: on an empty ring a reader (and on a full ring a writer) falls back to
+`wait_event_interruptible` with check-sleep-recheck against the lock-free
+predicate. Producers wake `read_wq` and consumers wake `write_wq` after each
+operation. Wakeups are unconditional (they take the wait-queue lock) for
+correctness; a `wq_has_sleeper`-style optimisation is possible but deferred.
+
+**Not atomic-context safe.** `copy_to_user`/`copy_from_user` can fault and
+sleep, so — exactly like the blocking path — the "lock-free" path is only safe
+in process context. "Lock-free" refers to the absence of the ring mutex on the
+fast path, not to atomic-context usability.
+
+**Mode/geometry coupling.** SMODE switches only on an idle, empty ring (else
+`-EBUSY`) and resets both index representations; the mutex it takes does not
+exclude an in-flight lock-free operation, so the caller must also ensure no I/O
+is in progress. RESIZE likewise rejects a non-power-of-two capacity while in
+SPSC mode. `kbuf_occupancy()` reports depth correctly in either mode and is used
+by `/proc` and `KBUF_IOCGSTATS`. SPSC counters are updated with `WRITE_ONCE` by
+their single writer and observed without the global lock — best-effort, but
+each field is read without tearing on 64-bit.
+
+**Test.** `tests/test_spsc.c` switches a device to SPSC, forks a producer and a
+consumer pinned to different CPUs, and pushes tens of thousands of sequenced,
+pattern-filled messages through an 8-slot ring with blocking I/O — verifying
+strict FIFO order and byte-for-byte integrity, and exercising the wait-queue
+fallback heavily (the run logs thousands of producer sleeps). It restores
+blocking mode before exiting.
+
 ## Test harness (QEMU)
 
 `scripts/run-qemu.sh` builds a busybox initramfs containing `kbuf.ko` and
@@ -159,8 +206,10 @@ and reopens `/dev/console` itself, so there are no device nodes to create. Only
 the boot needs a readable kernel image (host `/boot/vmlinuz-*` is typically mode
 0600, so the script expects a readable copy in `.qemu/bzImage`).
 
-## Open questions (to resolve in the phase that needs them)
+## Open questions
 
-- **Mode switch (`KBUF_IOCSMODE`).** Whether switching between blocking and
-  lock-free SPSC mode is allowed with an open ring, or only when idle. Phase 5.
-  (The command and its validation exist now; only the behaviour is deferred.)
+- **Mode switch concurrency.** SMODE requires an empty ring and resets cleanly,
+  but the mutex it holds cannot exclude an in-flight lock-free SPSC operation.
+  The current contract is "switch only when no I/O is in progress." A fully
+  race-free online switch would need to quiesce both sides (e.g. an RCU-style
+  grace period or a per-side epoch). Deferred — not needed for the lab use.

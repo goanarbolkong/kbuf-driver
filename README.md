@@ -49,7 +49,7 @@ the module to be MOK-signed first.
 | 2 | poll/epoll + QEMU test harness | ✅ done (verified under QEMU) |
 | 3 | ioctl UAPI (resize, stats, reset, mode) | ✅ done (verified under QEMU) |
 | 4 | Multiple instances (N minors, `ndevices=`) | ✅ done (verified under QEMU) |
-| 5 | Lock-free SPSC mode | planned |
+| 5 | Lock-free SPSC mode | ✅ done (verified under QEMU) |
 | 6 | mmap zero-copy ring | planned |
 | 7 | debugfs + tracepoints | planned |
 | 8 | kselftest suite + CI | CI stub in place |
