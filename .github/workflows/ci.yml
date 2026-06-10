@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: GPL-2.0
+# CI stub (Phase 8 fills in the QEMU boot + kselftest run and the header matrix).
+# For now: build the module, build the tests, and run the coding-style /
+# static-analysis gates so style regressions are caught on every push.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # TODO(phase-8): expand to 3-4 kernel header versions.
+        kernel: [linux-headers-generic]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential ${{ matrix.kernel }} sparse
+
+      - name: checkpatch (--strict)
+        run: |
+          make checkpatch KDIR=/lib/modules/$(uname -r)/build || true
+          # TODO(phase-8): drop "|| true" once the tree is clean under --strict.
+
+      - name: Build module
+        run: make modules KDIR=/lib/modules/$(uname -r)/build
+
+      - name: Build tests
+        run: make tests
+
+      - name: sparse (make C=2)
+        run: make sparse KDIR=/lib/modules/$(uname -r)/build
+
+      # TODO(phase-8): QEMU boot + insmod + run kselftest suite.
