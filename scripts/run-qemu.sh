@@ -43,15 +43,15 @@ BB="$(command -v busybox)" \
 	|| die "busybox at $BB is not static; install busybox-static"
 
 # Resolve the kernel image. The host kernel under /boot is usually mode 0600,
-# so prefer a readable copy in .qemu/. Provision it once with:
-#   sudo install -m644 /boot/vmlinuz-$(uname -r) .qemu/bzImage
+# so prefer a readable copy in .qemu/. The hint below uses absolute paths so it
+# works no matter which directory the script was invoked from.
 if [[ ! -f "$KERNEL_IMG" ]]; then
 	host_k="/boot/vmlinuz-$(uname -r)"
 	if [[ -r "$host_k" ]]; then
 		KERNEL_IMG="$host_k"
 	else
-		die "no kernel image. Provision a readable one:
-    mkdir -p .qemu && sudo install -m644 $host_k .qemu/bzImage"
+		die "no kernel image. Provision a readable one (creates parent dir):
+    sudo install -D -m644 $host_k '$BUILD/bzImage'"
 	fi
 fi
 [[ -r "$KERNEL_IMG" ]] || die "kernel image not readable: $KERNEL_IMG"
