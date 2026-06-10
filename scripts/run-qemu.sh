@@ -101,7 +101,10 @@ if insmod /kbuf.ko; then
 else
 	echo "insmod: FAIL"; rc=1
 fi
-[ -e /dev/kbuf ] && echo "/dev/kbuf present" || { echo "/dev/kbuf MISSING"; rc=1; }
+[ -e /dev/kbuf0 ] && echo "/dev/kbuf0 present" || { echo "/dev/kbuf0 MISSING"; rc=1; }
+ndev=$(ls -d /dev/kbuf[0-9]* 2>/dev/null | wc -l)
+echo "device nodes: $ndev"
+[ "$ndev" -eq 4 ] && echo "4 devices (default ndevices): OK" || { echo "expected 4 devices, got $ndev"; rc=1; }
 cat /proc/kbuf_status
 
 # Self-contained tests first (each fills and drains the ring itself). Then the
@@ -121,6 +124,11 @@ if [ -x /tests/test_ioctl ]; then
 	if timeout 20 /tests/test_ioctl; then echo "test_ioctl: OK"; else echo "test_ioctl: FAIL"; rc=1; fi
 fi
 
+if [ -x /tests/test_multi ]; then
+	echo "--- test_multi ---"
+	if timeout 20 /tests/test_multi; then echo "test_multi: OK"; else echo "test_multi: FAIL"; rc=1; fi
+fi
+
 echo "--- producer fills 8 slots ---"
 if timeout 15 /tests/test_producer 8 0; then echo "producer: OK"; else echo "producer: FAIL"; rc=1; fi
 cat /proc/kbuf_status
@@ -129,6 +137,17 @@ if timeout 15 /tests/test_consumer 8 0; then echo "consumer: OK"; else echo "con
 
 echo "--- rmmod ---"
 if rmmod kbuf; then echo "rmmod: OK"; else echo "rmmod: FAIL"; rc=1; fi
+
+# Reload with a non-default ndevices to exercise the module param and a full
+# unload/reload cycle.
+echo "--- reload with ndevices=2 ---"
+if insmod /kbuf.ko ndevices=2; then
+	n2=$(ls -d /dev/kbuf[0-9]* 2>/dev/null | wc -l)
+	[ "$n2" -eq 2 ] && echo "ndevices=2 honored: OK" || { echo "ndevices=2 FAIL (got $n2)"; rc=1; }
+	if rmmod kbuf; then echo "reload rmmod: OK"; else echo "reload rmmod: FAIL"; rc=1; fi
+else
+	echo "reload insmod: FAIL"; rc=1
+fi
 
 if [ "$rc" -eq 0 ]; then
 	echo "KBUF_QEMU_RESULT: PASS"

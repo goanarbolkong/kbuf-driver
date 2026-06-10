@@ -13,7 +13,7 @@
 #include <string.h>
 #include <errno.h>
 
-#define DEVICE      "/dev/kbuf"
+#define DEVICE      "/dev/kbuf0"
 #define NUM_BUFFERS 8
 
 int main(void)

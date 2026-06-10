@@ -9,7 +9,7 @@
 #include <stdlib.h>
 #include <errno.h>
 
-#define DEVICE "/dev/kbuf"
+#define DEVICE "/dev/kbuf0"
 
 int main(int argc, char *argv[])
 {

@@ -1,10 +1,10 @@
 # kbuf — a Linux producer/consumer character device
 
-`kbuf` is an out-of-tree Linux kernel module exposing `/dev/kbuf`, a fixed-size
-circular queue with blocking and non-blocking semantics. Producers `write()`
-messages into empty slots; consumers `read()` them back in FIFO order. A mutex
-serialises ring access and two wait queues block callers when the ring is full
-or empty.
+`kbuf` is an out-of-tree Linux kernel module exposing `ndevices` independent
+character devices `/dev/kbuf0..N`, each a fixed-size circular queue with
+blocking and non-blocking semantics. Producers `write()` messages into empty
+slots; consumers `read()` them back in FIFO order. A per-device mutex serialises
+ring access and two wait queues block callers when that ring is full or empty.
 
 This repository started as a university OS course project and is being grown
 into a portfolio-grade driver. Development direction and the phase plan live in
@@ -48,7 +48,7 @@ the module to be MOK-signed first.
 | 1 | Multi-file restructure + UAPI scaffold | ✅ done |
 | 2 | poll/epoll + QEMU test harness | ✅ done (verified under QEMU) |
 | 3 | ioctl UAPI (resize, stats, reset, mode) | ✅ done (verified under QEMU) |
-| 4 | Multiple instances (N minors) | planned |
+| 4 | Multiple instances (N minors, `ndevices=`) | ✅ done (verified under QEMU) |
 | 5 | Lock-free SPSC mode | planned |
 | 6 | mmap zero-copy ring | planned |
 | 7 | debugfs + tracepoints | planned |

@@ -19,7 +19,7 @@
 
 #include "kbuf.h"
 
-#define DEVICE          "/dev/kbuf"
+#define DEVICE          "/dev/kbuf0"
 #define DEFAULT_NBUF    8
 #define DEFAULT_BUFSIZE 4096
 

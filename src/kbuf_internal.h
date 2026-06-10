@@ -28,6 +28,10 @@
 #define KBUF_MAX_NUM_BUFFERS 256
 #define KBUF_MAX_BUFFER_SIZE (64 * 1024)
 
+/* Number of /dev/kbufN devices, set by the ndevices module param. */
+#define KBUF_DEFAULT_NDEVICES 4
+#define KBUF_MAX_NDEVICES     64
+
 struct kbuf_slot {
 	char  *data;	/* heap buffer of dev->buffer_size bytes */
 	size_t len;	/* valid bytes currently held            */
@@ -64,13 +68,14 @@ struct kbuf_dev {
 	wait_queue_head_t      read_wq;		/* readers sleep when empty    */
 	wait_queue_head_t      write_wq;	/* writers sleep when full     */
 	struct mutex           lock;
-	struct cdev            cdev;
+	struct cdev            cdev;		/* container_of target in open()*/
 	dev_t                  devno;
-	struct class          *cls;
 	struct device         *dev;
 };
 
-extern struct kbuf_dev kbuf;
+/* The device array and its length, owned by kbuf_main.c. */
+extern struct kbuf_dev *kbuf_devices;
+extern unsigned int     kbuf_ndevices;
 
 /* ring core - src/kbuf_ring.c */
 struct kbuf_slot *kbuf_alloc_slots(unsigned int num_buffers, unsigned int buffer_size);

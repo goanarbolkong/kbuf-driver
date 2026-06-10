@@ -19,7 +19,7 @@
 #include <poll.h>
 #include <sys/epoll.h>
 
-#define DEVICE      "/dev/kbuf"
+#define DEVICE      "/dev/kbuf0"
 #define NUM_BUFFERS 8	/* must match KBUF_NUM_BUFFERS in the module */
 
 static int failures;

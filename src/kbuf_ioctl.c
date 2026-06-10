@@ -10,6 +10,9 @@
  *                    -EBUSY (see docs/DESIGN.md for the rationale).
  *   KBUF_IOCSMODE  - select blocking vs lock-free SPSC mode. SPSC is not yet
  *                    implemented (Phase 5), so it returns -EOPNOTSUPP.
+ *
+ * Every command acts on the device the fd was opened against
+ * (filp->private_data), so each /dev/kbufN is controlled independently.
  */
 #include <linux/errno.h>
 #include <linux/fs.h>
@@ -22,44 +25,44 @@
 
 #include "kbuf_internal.h"
 
-static long kbuf_ioc_getstats(unsigned long arg)
+static long kbuf_ioc_getstats(struct kbuf_dev *dev, unsigned long arg)
 {
 	struct kbuf_stats st;
 
 	memset(&st, 0, sizeof(st));
-	mutex_lock(&kbuf.lock);
-	st.bytes_produced = kbuf.bytes_produced;
-	st.bytes_consumed = kbuf.bytes_consumed;
-	st.msgs_produced  = kbuf.msgs_produced;
-	st.msgs_consumed  = kbuf.msgs_consumed;
-	st.read_sleeps    = kbuf.read_sleeps;
-	st.write_sleeps   = kbuf.write_sleeps;
-	st.num_buffers    = kbuf.num_buffers;
-	st.buffer_size    = kbuf.buffer_size;
-	st.cur_count      = kbuf.count;
-	st.peak_count     = kbuf.peak_count;
-	mutex_unlock(&kbuf.lock);
+	mutex_lock(&dev->lock);
+	st.bytes_produced = dev->bytes_produced;
+	st.bytes_consumed = dev->bytes_consumed;
+	st.msgs_produced  = dev->msgs_produced;
+	st.msgs_consumed  = dev->msgs_consumed;
+	st.read_sleeps    = dev->read_sleeps;
+	st.write_sleeps   = dev->write_sleeps;
+	st.num_buffers    = dev->num_buffers;
+	st.buffer_size    = dev->buffer_size;
+	st.cur_count      = dev->count;
+	st.peak_count     = dev->peak_count;
+	mutex_unlock(&dev->lock);
 
 	if (copy_to_user((void __user *)arg, &st, sizeof(st)))
 		return -EFAULT;
 	return 0;
 }
 
-static long kbuf_ioc_reset(void)
+static long kbuf_ioc_reset(struct kbuf_dev *dev)
 {
-	mutex_lock(&kbuf.lock);
-	kbuf.bytes_produced = 0;
-	kbuf.bytes_consumed = 0;
-	kbuf.msgs_produced  = 0;
-	kbuf.msgs_consumed  = 0;
-	kbuf.read_sleeps    = 0;
-	kbuf.write_sleeps   = 0;
-	kbuf.peak_count     = kbuf.count;
-	mutex_unlock(&kbuf.lock);
+	mutex_lock(&dev->lock);
+	dev->bytes_produced = 0;
+	dev->bytes_consumed = 0;
+	dev->msgs_produced  = 0;
+	dev->msgs_consumed  = 0;
+	dev->read_sleeps    = 0;
+	dev->write_sleeps   = 0;
+	dev->peak_count     = dev->count;
+	mutex_unlock(&dev->lock);
 	return 0;
 }
 
-static long kbuf_ioc_resize(unsigned long arg)
+static long kbuf_ioc_resize(struct kbuf_dev *dev, unsigned long arg)
 {
 	struct kbuf_resize rq;
 	struct kbuf_slot *new_slots, *old_slots;
@@ -81,33 +84,33 @@ static long kbuf_ioc_resize(unsigned long arg)
 	if (!new_slots)
 		return -ENOMEM;
 
-	mutex_lock(&kbuf.lock);
-	if (kbuf.count != 0) {
+	mutex_lock(&dev->lock);
+	if (dev->count != 0) {
 		/* Refuse to discard in-flight data; caller drains first. */
-		mutex_unlock(&kbuf.lock);
+		mutex_unlock(&dev->lock);
 		kbuf_free_slots(new_slots, rq.num_buffers);
 		return -EBUSY;
 	}
 
-	old_slots = kbuf.slots;
-	old_n     = kbuf.num_buffers;
-	kbuf.slots       = new_slots;
-	kbuf.num_buffers = rq.num_buffers;
-	kbuf.buffer_size = rq.buffer_size;
-	kbuf.read_pos    = 0;
-	kbuf.write_pos   = 0;
-	kbuf.count       = 0;
-	kbuf.peak_count  = 0;
-	mutex_unlock(&kbuf.lock);
+	old_slots = dev->slots;
+	old_n     = dev->num_buffers;
+	dev->slots       = new_slots;
+	dev->num_buffers = rq.num_buffers;
+	dev->buffer_size = rq.buffer_size;
+	dev->read_pos    = 0;
+	dev->write_pos   = 0;
+	dev->count       = 0;
+	dev->peak_count  = 0;
+	mutex_unlock(&dev->lock);
 
 	kbuf_free_slots(old_slots, old_n);
-	wake_up_interruptible(&kbuf.write_wq);	/* free space may have grown */
-	pr_info("kbuf: resized to %u slots x %u bytes (pid=%d)\n",
-		rq.num_buffers, rq.buffer_size, current->pid);
+	wake_up_interruptible(&dev->write_wq);	/* free space may have grown */
+	pr_info("kbuf: %s resized to %u slots x %u bytes (pid=%d)\n",
+		dev_name(dev->dev), rq.num_buffers, rq.buffer_size, current->pid);
 	return 0;
 }
 
-static long kbuf_ioc_smode(unsigned long arg)
+static long kbuf_ioc_smode(struct kbuf_dev *dev, unsigned long arg)
 {
 	int mode;
 
@@ -118,14 +121,16 @@ static long kbuf_ioc_smode(unsigned long arg)
 	if (mode == KBUF_MODE_SPSC)
 		return -EOPNOTSUPP;	/* lock-free SPSC arrives in Phase 5 */
 
-	mutex_lock(&kbuf.lock);
-	kbuf.mode = mode;
-	mutex_unlock(&kbuf.lock);
+	mutex_lock(&dev->lock);
+	dev->mode = mode;
+	mutex_unlock(&dev->lock);
 	return 0;
 }
 
 long kbuf_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
+	struct kbuf_dev *dev = filp->private_data;
+
 	if (_IOC_TYPE(cmd) != KBUF_IOC_MAGIC)
 		return -ENOTTY;
 	if (_IOC_NR(cmd) == 0 || _IOC_NR(cmd) > KBUF_IOC_MAXNR)
@@ -133,13 +138,13 @@ long kbuf_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
 	switch (cmd) {
 	case KBUF_IOCGSTATS:
-		return kbuf_ioc_getstats(arg);
+		return kbuf_ioc_getstats(dev, arg);
 	case KBUF_IOCRESET:
-		return kbuf_ioc_reset();
+		return kbuf_ioc_reset(dev);
 	case KBUF_IOCRESIZE:
-		return kbuf_ioc_resize(arg);
+		return kbuf_ioc_resize(dev, arg);
 	case KBUF_IOCSMODE:
-		return kbuf_ioc_smode(arg);
+		return kbuf_ioc_smode(dev, arg);
 	default:
 		return -ENOTTY;
 	}

@@ -114,6 +114,41 @@ produce/consume, RESET, RESIZE (empty OK / non-empty `-EBUSY` / bounds
 the default 8×4096 geometry and drains before exiting so later tests in the same
 boot see a clean device.
 
+## 5. Multiple instances (Phase 4)
+
+**Decision.** Create `ndevices` independent character devices /dev/kbuf0..N-1
+(module param, default 4, bounded by `KBUF_MAX_NDEVICES`). The single global
+`struct kbuf_dev` becomes a heap array (`kcalloc`); one shared `struct class`
+and one contiguous minor range (`alloc_chrdev_region(.., ndevices, ..)`) back
+them all.
+
+**Per-open routing.** `open()` recovers its device with
+`container_of(inode->i_cdev, struct kbuf_dev, cdev)` and stores it in
+`filp->private_data`; every read/write/poll/ioctl then operates on that device.
+This is why Phase 1 deliberately threaded a `struct kbuf_dev *` through every
+helper instead of reaching for a global — Phase 4 added the array and the
+routing without touching the ring or ioctl logic at all.
+
+**Independence.** Each device has its own ring, mutex, wait queues, geometry,
+mode, and counters, so `/dev/kbuf0` and `/dev/kbuf1` share nothing.
+`tests/test_multi.c` proves it: data written to kbuf0 is invisible to kbuf1,
+counters are separate, and `KBUF_IOCRESIZE` on one leaves the other's geometry
+untouched.
+
+**Lifecycle / teardown.** Devices are created in a loop; on a mid-loop failure,
+`kbuf_teardown_devices(i)` unwinds exactly the `i` fully-created devices, then
+the class and region are released. Each loop iteration either fully succeeds or
+frees its own partial allocations before unwinding, so there is no leak on any
+error path. The same teardown runs on module exit.
+
+**Init ordering safety carries over.** Each device's ring, mutex, and wait
+queues are initialised before its `cdev_add`, so a device is never reachable
+before it is fully constructed.
+
+**Deferred (stretch).** The `/dev/kbuf-ctl` control device for dynamic
+create/destroy with `kref` lifetime management is not implemented here; the
+static `ndevices` set covers the Phase 4 requirement.
+
 ## Test harness (QEMU)
 
 `scripts/run-qemu.sh` builds a busybox initramfs containing `kbuf.ko` and
