@@ -18,7 +18,9 @@ produced by `bench/kbuf_bench.c`.
 Reproduce with `scripts/run-baremetal-bench.sh` (signs the module under Secure
 Boot, pins the governor, loads, runs `bench/kbuf_bench full`, and always tears
 down). The script defaults to CPUs 2 and 4; override with `KBUF_BENCH_CPU_A` /
-`KBUF_BENCH_CPU_B`.
+`KBUF_BENCH_CPU_B`. The figures below are regenerated from this run's recorded
+numbers with `python3 scripts/plot_bench.py` (the dataset is embedded in that
+script; update it when you re-bench).
 
 > **Why two distinct physical cores matters.** The benchmark pins the producer
 > and consumer to separate CPUs. On an SMT machine the *naive* choice of CPU 0
@@ -52,6 +54,10 @@ down). The script defaults to CPUs 2 and 4; override with `KBUF_BENCH_CPU_A` /
 
 ## Throughput (MB/s), 64 MiB per run, 5 runs (min/avg/max)
 
+![Throughput vs message size](img/throughput.png)
+
+![Speedup over the mutex syscall path](img/speedup.png)
+
 | chunk |        mutex |          spsc |              mmap |          pipe |
 |------:|-------------:|--------------:|------------------:|--------------:|
 |   64 B|   26/  28/ 30|  206/ 213/ 219|  4876/ 5002/ 5156 |  321/ 341/ 354|
@@ -61,6 +67,8 @@ down). The script defaults to CPUs 2 and 4; override with `KBUF_BENCH_CPU_A` /
 |16384 B| 4332/4582/4809|15098/15423/15642|20648/21030/21269 | 5741/6051/6413|
 
 ## Latency — mmap ring, one-way (ns), 20 000 samples
+
+![mmap one-way latency percentiles](img/latency.png)
 
 | p50  | p90  | p99  | max  |
 |-----:|-----:|-----:|-----:|
@@ -73,6 +81,8 @@ host noise from preemption and swapping, not the transport. Pinning, `mlockall`,
 and a quiet machine collapsed it.)
 
 ## False sharing — 200 Mi increments/core
+
+![False sharing: same line vs separate cache lines](img/false_sharing.png)
 
 | layout         | time   |
 |----------------|-------:|
