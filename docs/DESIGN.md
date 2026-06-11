@@ -252,8 +252,9 @@ test with no leak or oops.
 different CPUs and streams 4 MiB through the 64 KiB ring (~64 wraps), verifying
 every byte by absolute position to catch any loss, reorder, or wrap miscopy.
 `bench/kbuf_bench.c` compares mmap throughput against the `read()`/`write()`
-slot path; in-VM it shows roughly an order-of-magnitude speedup (illustrative —
-the rigorous report with methodology is Phase 9).
+slot path; on bare metal (i9-12900H) it moves small 64 B messages ~180× faster
+than the blocking syscall path (~5.0 GB/s vs ~28 MB/s). See `docs/BENCHMARKS.md`
+for the full methodology, numbers, and host-stability caveats.
 
 ## 8. Observability — debugfs + tracepoints (Phase 7)
 

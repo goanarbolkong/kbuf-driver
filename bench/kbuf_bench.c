@@ -14,8 +14,10 @@
  *   falsesharing - two cores hammering counters on the same vs separate lines,
  *                  for both plain stores and atomic read-modify-writes
  *
- * Numbers are environment-dependent; see docs/BENCHMARKS.md for methodology and
- * the caveat that figures gathered inside a VM are illustrative, not bare metal.
+ * Numbers are environment-dependent. The figures in docs/BENCHMARKS.md were
+ * gathered on bare metal (i9-12900H, governor performance, two pinned P-cores)
+ * via scripts/run-baremetal-bench.sh; see that file for the full methodology and
+ * the host-stability caveats.
  *
  * Usage: kbuf_bench [quick|full]   (default: full)
  */
