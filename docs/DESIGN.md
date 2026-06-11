@@ -204,6 +204,17 @@ one-page control block (`struct kbuf_mmap_ctrl`: head, tail, capacity) and a
 `KBUF_MMAP_CAPACITY`-byte (64 KiB) data ring. `.mmap` exposes them as a single
 region laid out `[ctrl page][data][data]`.
 
+```mermaid
+flowchart LR
+    subgraph virt["one mmap region per /dev/kbufN"]
+        direction LR
+        ctrl["ctrl page<br/>head / tail"] --> m1["data mapping #1<br/>pages 0..K"] --> m2["data mapping #2<br/>pages 0..K (alias)"]
+    end
+    phys["physical data pages 0..K<br/>(vmalloc_user)"]
+    m1 -. vmalloc_to_page .-> phys
+    m2 -. "pgoff mod K" .-> phys
+```
+
 **The magic double mapping.** The data buffer is mapped *twice*, back to back.
 The fault handler (`kbuf_vm_fault`) reduces the data page offset modulo the data
 page count, so both virtual copies resolve to the same physical pages. A record
