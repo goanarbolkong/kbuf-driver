@@ -40,15 +40,21 @@ script; update it when you re-bench).
 - **Topology.** One producer process and one consumer process, pinned to two
   distinct physical P-cores with `sched_setaffinity` (`bench/kbuf_bench.c`).
 - **Throughput.** Move a fixed total (64 MiB) in fixed-size chunks; sweep the
-  chunk size; report MB/s = total / wall-clock, as **min/avg/max over 5 runs**.
-  For the slot transports the device is resized so one slot holds one message.
+  chunk size; report MB/s = total / wall-clock. The headline table below is a
+  clean **min/avg/max over 5 runs** pass; the current tool also reports
+  **mean ± sample stddev** (now the default, 10 runs) — see *Threats to
+  validity* on why this thermally-constrained laptop does not yield a stable
+  stddev pass. For the slot transports the device is resized so one slot holds
+  one message.
 - **Latency.** One-way producer→consumer latency on the mmap ring: the producer
   stamps `CLOCK_MONOTONIC` into each 8-byte message, the consumer subtracts on
   receipt. 20 000 samples, sorted for percentiles. All pages are `mlock`ed so
   no sample includes a page fault.
 - **False sharing.** Two pinned processes each increment a counter in a shared
   page for a fixed number of iterations, once with the counters on the **same**
-  cache line and once on **separate** lines; compare wall-clock.
+  cache line and once on **separate** lines; compare wall-clock. Run for two
+  access patterns: plain **store-only** increments (200 Mi/core) and **atomic
+  read-modify-writes** (`LOCK XADD`, 25 Mi/core).
 - Build with `make bench`, then `./bench/kbuf_bench full` on a host with the
   module loaded (`/dev/kbuf0..2`), or use `scripts/run-baremetal-bench.sh`.
 
@@ -80,23 +86,34 @@ core. (An earlier loaded-desktop run reported a p50 of ~32 µs; that was pure
 host noise from preemption and swapping, not the transport. Pinning, `mlockall`,
 and a quiet machine collapsed it.)
 
-## False sharing — 200 Mi increments/core
+## False sharing — store-only vs atomic RMW
 
-![False sharing: same line vs separate cache lines](img/false_sharing.png)
+![False sharing: store-only vs atomic RMW, same vs separate cache lines](img/false_sharing.png)
 
-| layout         | time   |
-|----------------|-------:|
-| same line      | 0.060 s|
-| separate lines | 0.047 s|
+| access pattern | same line | separate lines | separation speedup |
+|----------------|----------:|---------------:|-------------------:|
+| store-only (200 Mi/core)  | 0.074 s | 0.061 s | **1.21×** |
+| atomic-RMW (25 Mi/core)   | 0.572 s | 0.117 s | **4.87×** |
 
-**Separation speedup: 1.29×.** Two cores writing different variables that share
-one cache line bounce the line between their L1s; padding them onto separate
-lines removes that coherence traffic. The magnitude is modest here because each
-core only *stores* (never reads the sibling's value), so the store buffer lets a
-core retain the line for a burst of writes before the other steals it — a
-read-modify-write contention pattern would show a much larger gap. The direction
-is the point, and it is exactly why the mmap control page keeps `head` and
-`tail` on separate cache lines.
+Two cores writing different variables that share one cache line bounce the line
+between their L1s; padding them onto separate lines removes that coherence
+traffic. **How much it costs depends entirely on the access pattern:**
+
+- With **plain stores** the penalty is modest (~1.21×). Each core only *stores*
+  (never reads the sibling's value), so its store buffer lets it retain the line
+  for a burst of writes before the other steals it — the line still bounces, but
+  amortised across a burst.
+- With an **atomic read-modify-write** (`LOCK XADD`) the penalty is large
+  (~4.87×). Every single increment must acquire the line in *exclusive* state, so
+  a shared line ping-pongs between the two L1s on **every** op — there is no
+  burst to amortise. This is the textbook false-sharing cost.
+
+Both directions are the same lesson, and it is exactly why the mmap control page
+keeps `head` and `tail` on separate cache lines: a producer publishing `head`
+and a consumer publishing `tail` must never contend for one line. (These
+counters use release stores, not RMWs, so the real ring sits nearer the
+store-only case — but the atomic experiment shows how sharp the cliff becomes
+the moment a contended atomic is involved.)
 
 ## Discussion
 
@@ -126,11 +143,15 @@ is the point, and it is exactly why the mmap control page keeps `head` and
 - Single dual-core placement (one P-core pair); no NUMA dimension on this
   single-socket laptop part. A server run across sockets would add a NUMA
   placement sweep.
-- Error bars are reported as min/avg/max over 5 runs, not stddev with a
-  confidence interval; more runs would tighten this.
+- **Host stability bounds the throughput/latency numbers.** The headline table
+  is a clean min/avg/max pass. The tool now reports mean ± stddev over 10 runs,
+  but on this laptop back-to-back `performance`-governor passes drive thermal
+  throttling and the desktop steals the pinned P-cores: repeat passes showed the
+  mmap@64 B cell swing from ~5.0 GB/s down to ~1.0 GB/s and the mmap latency p50
+  balloon from ~2.8 µs to ~39 µs — host noise, not the transport. Stable stddev
+  bars need a quiesced, thermally-headroomed machine (a server, `isolcpus` +
+  `nohz_full`, or a cooled bench), which is the right place to redo this.
 - Bandwidth, not goodput, at large sizes — all transports approach the same
   `memcpy` ceiling, so the interesting regime is small messages.
-- The false-sharing probe uses store-only increments; an atomic RMW variant
-  would demonstrate a larger coherence penalty.
 - P-core vs E-core placement is unexplored; all numbers here are P-core to
   P-core.

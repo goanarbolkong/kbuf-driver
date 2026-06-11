@@ -8,6 +8,11 @@ writes up. It is the canonical run captured by
 which is gitignored, so the numbers are reproduced here verbatim). Re-run that
 script on a quiet host and update the tables below to refresh the figures.
 
+Throughput and latency are the clean reference pass; the false-sharing numbers
+are from a later pass of the same machine that added the atomic-RMW access
+pattern. See the "Threats to validity" note in docs/BENCHMARKS.md on why this
+laptop does not yield a stable stddev throughput pass.
+
 Usage:
     python3 scripts/plot_bench.py            # writes PNGs into docs/img/
     python3 scripts/plot_bench.py --outdir X
@@ -41,8 +46,14 @@ THROUGHPUT = {
 # mmap one-way latency percentiles, nanoseconds, 20 000 samples.
 LATENCY_NS = {"p50": 2765, "p90": 3185, "p99": 3545, "max": 3811}
 
-# False-sharing micro-bench wall-clock, 200 Mi increments/core.
-FALSE_SHARING_S = {"same line": 0.060, "separate lines": 0.047}
+# False-sharing micro-bench wall-clock, per core: 200 Mi plain-store increments
+# vs 25 Mi atomic read-modify-writes (LOCK XADD). An atomic RMW must own the
+# line exclusively for every op, so sharing a line ping-pongs it between L1s on
+# every increment -- a far larger penalty than the store-only burst pattern.
+FALSE_SHARING_S = {
+    "store-only": {"same line": 0.074, "separate lines": 0.061},
+    "atomic-RMW": {"same line": 0.572, "separate lines": 0.117},
+}
 
 # Consistent identity per transport across every figure.
 COLORS = {"mutex": "#c0392b", "spsc": "#2e86de",
@@ -147,20 +158,37 @@ def plot_latency(outdir):
 
 
 def plot_false_sharing(outdir):
-    fig, ax = plt.subplots(figsize=(6, 4.5))
-    keys = list(FALSE_SHARING_S.keys())
-    vals = [FALSE_SHARING_S[k] for k in keys]
-    colors = ["#c0392b", "#27ae60"]
-    bars = ax.bar(keys, vals, color=colors, width=0.55, zorder=3)
-    for b, v in zip(bars, vals):
-        ax.annotate(f"{v:.3f} s", (b.get_x() + b.get_width() / 2, v),
-                    textcoords="offset points", xytext=(0, 4), ha="center",
-                    fontsize=10)
-    speedup = FALSE_SHARING_S["same line"] / FALSE_SHARING_S["separate lines"]
-    ax.set_ylabel("wall-clock (s, lower is better)")
-    ax.set_ylim(0, max(vals) * 1.25)
-    ax.set_title("False sharing: two cores incrementing counters\n"
-                 f"separating onto distinct cache lines = {speedup:.2f}× faster")
+    fig, ax = plt.subplots(figsize=(7.5, 5))
+    groups = list(FALSE_SHARING_S.keys())  # store-only, atomic-RMW
+    x = list(range(len(groups)))
+    width = 0.36
+    same = [FALSE_SHARING_S[g]["same line"] for g in groups]
+    sep = [FALSE_SHARING_S[g]["separate lines"] for g in groups]
+    b1 = ax.bar([i - width / 2 for i in x], same, width, color="#c0392b",
+                label="same cache line", zorder=3)
+    b2 = ax.bar([i + width / 2 for i in x], sep, width, color="#27ae60",
+                label="separate cache lines", zorder=3)
+    for bars in (b1, b2):
+        for b in bars:
+            ax.annotate(f"{b.get_height():.3f} s",
+                        (b.get_x() + b.get_width() / 2, b.get_height()),
+                        textcoords="offset points", xytext=(0, 3),
+                        ha="center", fontsize=9)
+    for i, g in enumerate(groups):
+        sp = (FALSE_SHARING_S[g]["same line"] /
+              FALSE_SHARING_S[g]["separate lines"])
+        ax.annotate(f"{sp:.2f}× from separation",
+                    (i, max(same[i], sep[i])), textcoords="offset points",
+                    xytext=(0, 26), ha="center", fontsize=10,
+                    fontweight="bold")
+    ax.set_yscale("log")
+    ax.set_ylim(min(same + sep) * 0.6, max(same + sep) * 4)
+    ax.set_xticks(x)
+    ax.set_xticklabels(groups)
+    ax.set_ylabel("wall-clock (s, log scale, lower is better)")
+    ax.set_title("False sharing: store-only vs atomic read-modify-write\n"
+                 "two pinned cores incrementing counters (same machine)")
+    ax.legend(frameon=False, loc="upper left")
     ax.grid(axis="x", visible=False)
     fig.tight_layout()
     path = os.path.join(outdir, "false_sharing.png")

@@ -173,7 +173,9 @@ per-message syscall cost amortises, every transport trends toward memory-copy
 bandwidth, so the interesting regime is small messages. One-way mmap latency is
 ~2.8 µs at the median with a tight tail (max only ~1.4× the median). The
 control-page cache-line separation is justified by a [standalone false-sharing
-experiment](docs/BENCHMARKS.md#false-sharing--200-mi-incrementscore).
+experiment](docs/BENCHMARKS.md#false-sharing--store-only-vs-atomic-rmw): putting
+two cores' counters on the same line vs separate lines costs **4.9×** under
+atomic read-modify-writes (1.2× for plain stores).
 
 ## Layout
 
