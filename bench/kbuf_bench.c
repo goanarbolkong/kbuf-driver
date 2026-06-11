@@ -9,9 +9,10 @@
  *   pipe   - pipe(2), as a kernel baseline
  *
  * Experiments:
- *   throughput   - MB/s vs message size, several runs (min/avg/max)
+ *   throughput   - MB/s vs message size, several runs (mean +/- sample stddev)
  *   latency      - one-way produce->consume latency percentiles (mmap ring)
- *   falsesharing - two cores hammering counters on the same vs separate lines
+ *   falsesharing - two cores hammering counters on the same vs separate lines,
+ *                  for both plain stores and atomic read-modify-writes
  *
  * Numbers are environment-dependent; see docs/BENCHMARKS.md for methodology and
  * the caveat that figures gathered inside a VM are illustrative, not bare metal.
@@ -26,6 +27,7 @@
 #include <string.h>
 #include <errno.h>
 #include <stdint.h>
+#include <math.h>
 #include <time.h>
 #include <sched.h>
 #include <sys/ioctl.h>
@@ -267,7 +269,7 @@ static void throughput(uint64_t total, int runs)
 	unsigned int si;
 	int t, r;
 
-	printf("\n## Throughput (MB/s), %llu MiB per run, %d runs (min/avg/max)\n",
+	printf("\n## Throughput (MB/s), %llu MiB per run, %d runs (mean +/- stddev)\n",
 	       (unsigned long long)(total >> 20), runs);
 	printf("%-8s", "size");
 	for (t = 0; t < T_COUNT; t++)
@@ -278,7 +280,7 @@ static void throughput(uint64_t total, int runs)
 		printf("%-8u", sizes[si]);
 		for (t = 0; t < T_COUNT; t++) {
 			double mb = total / (1024.0 * 1024.0);
-			double best = 1e30, worst = 0, sum = 0;
+			double sum = 0, sumsq = 0, mean, sd;
 			int ok = 1;
 
 			for (r = 0; r < runs; r++) {
@@ -290,16 +292,19 @@ static void throughput(uint64_t total, int runs)
 					break;
 				}
 				rate = mb / s;
-				if (rate < best)
-					best = rate;
-				if (rate > worst)
-					worst = rate;
 				sum += rate;
+				sumsq += rate * rate;
 			}
-			if (ok)
-				printf("  %5.0f/%5.0f/%5.0f", best, sum / runs, worst);
-			else
+			if (ok) {
+				mean = sum / runs;
+				/* Bessel-corrected sample standard deviation. */
+				sd = runs > 1
+				   ? sqrt((sumsq - sum * sum / runs) / (runs - 1))
+				   : 0.0;
+				printf("  %7.0f +/-%-6.0f", mean, sd);
+			} else {
 				printf("%18s", "n/a");
+			}
 		}
 		printf("\n");
 	}
@@ -369,7 +374,16 @@ struct fs_shared {
 	volatile uint64_t d;			/* separate line from c        */
 };
 
-static double fs_run(volatile uint64_t *x, volatile uint64_t *y, uint64_t iters)
+/*
+ * @atomic selects the contention pattern. A plain store-only increment lets a
+ * core keep the line in its store buffer for a burst before the sibling steals
+ * it, so false sharing is muted. An atomic read-modify-write (LOCK XADD) must
+ * own the line *exclusively* for every single op, so when the two counters
+ * share a line the line ping-pongs between L1s on every increment — the textbook
+ * coherence penalty, and a far larger gap than the store-only case shows.
+ */
+static double fs_run(volatile uint64_t *x, volatile uint64_t *y,
+		     uint64_t iters, int atomic)
 {
 	double t0 = now_sec();
 	pid_t pid = fork();
@@ -377,40 +391,59 @@ static double fs_run(volatile uint64_t *x, volatile uint64_t *y, uint64_t iters)
 
 	if (pid == 0) {
 		pin_to_cpu(cpu_a);
-		for (i = 0; i < iters; i++)
-			(*x)++;
+		if (atomic)
+			for (i = 0; i < iters; i++)
+				__atomic_fetch_add(x, 1, __ATOMIC_RELAXED);
+		else
+			for (i = 0; i < iters; i++)
+				(*x)++;
 		_exit(0);
 	}
 	pin_to_cpu(cpu_b);
-	for (i = 0; i < iters; i++)
-		(*y)++;
+	if (atomic)
+		for (i = 0; i < iters; i++)
+			__atomic_fetch_add(y, 1, __ATOMIC_RELAXED);
+	else
+		for (i = 0; i < iters; i++)
+			(*y)++;
 	waitpid(pid, NULL, 0);
 	return now_sec() - t0;
+}
+
+static void fs_report(struct fs_shared *s, const char *what,
+		      uint64_t iters, int atomic)
+{
+	double shared = fs_run(&s->a, &s->b, iters, atomic);	/* same line  */
+	double separate = fs_run(&s->c, &s->d, iters, atomic);	/* diff lines */
+
+	printf("  %-10s same line     : %.3f s\n", what, shared);
+	printf("  %-10s separate lines: %.3f s\n", what, separate);
+	printf("  %-10s speedup       : %.2fx\n", what, shared / separate);
 }
 
 static void falsesharing(uint64_t iters)
 {
 	struct fs_shared *s = mmap(NULL, sizeof(*s), PROT_READ | PROT_WRITE,
 				   MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-	double shared, separate;
+	/* Atomic RMWs are ~10x slower per op; scale iters down to keep runtime
+	 * comparable while still landing in a stable regime.
+	 */
+	uint64_t atomic_iters = iters / 8;
 
 	if (s == MAP_FAILED)
 		return;
-	shared = fs_run(&s->a, &s->b, iters);		/* same cache line   */
-	separate = fs_run(&s->c, &s->d, iters);		/* different lines   */
 
-	printf("\n## False sharing, %llu increments/core\n",
-	       (unsigned long long)iters);
-	printf("  same line     : %.3f s\n", shared);
-	printf("  separate lines: %.3f s\n", separate);
-	printf("  speedup from separation: %.2fx\n", shared / separate);
+	printf("\n## False sharing (%llu store / %llu atomic-RMW increments/core)\n",
+	       (unsigned long long)iters, (unsigned long long)atomic_iters);
+	fs_report(s, "store", iters, 0);
+	fs_report(s, "atomic-RMW", atomic_iters, 1);
 }
 
 int main(int argc, char *argv[])
 {
 	int quick = (argc > 1 && strcmp(argv[1], "quick") == 0);
 	uint64_t total = quick ? (8ULL << 20) : (64ULL << 20);
-	int runs = quick ? 2 : 5;
+	int runs = quick ? 3 : 10;
 	int lat_samples = quick ? 2000 : 20000;
 	uint64_t fs_iters = quick ? (20ULL << 20) : (200ULL << 20);
 

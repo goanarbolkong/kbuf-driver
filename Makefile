@@ -32,7 +32,7 @@ tests/%: tests/%.c
 bench: $(BENCHES)
 
 bench/%: bench/%.c
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) -o $@ $< -lm
 
 ## sparse: static analysis on the module (fix every warning)
 sparse:
