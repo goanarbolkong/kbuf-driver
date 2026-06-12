@@ -1,11 +1,11 @@
 # kbuf — a high-performance Linux producer/consumer character device
 
-An out-of-tree Linux kernel module that started life as a university OS course
-project and was grown into a portfolio-grade driver: multiple character devices,
-a versioned ioctl ABI, a lock-free SPSC mode, an **mmap zero-copy "magic ring"**
-that moves data with *no syscalls on the hot path*, observability via debugfs and
-perf tracepoints, a kselftest-style suite run under QEMU, and a benchmark report
-with reproducible numbers.
+A self-contained, out-of-tree Linux kernel module that takes the classic
+producer/consumer character device and pushes it to its limits: multiple
+character devices, a versioned ioctl ABI, a lock-free SPSC mode, an **mmap
+zero-copy "magic ring"** that moves data with *no syscalls on the hot path*,
+observability via debugfs and perf tracepoints, a kselftest-style suite run
+under QEMU, and a benchmark report with reproducible numbers.
 
 ![C](https://img.shields.io/badge/C-kernel%20module-00599C?logo=c)
 ![Linux kernel](https://img.shields.io/badge/Linux-6.17-FCC624?logo=linux&logoColor=black)
@@ -212,8 +212,9 @@ scripts/              QEMU harness, bare-metal bench, signing, plotting
 | 8 | functional suite + CI | ✅ done (suite verified under QEMU) |
 | 9 | Benchmark report | ✅ done (docs/BENCHMARKS.md) |
 
-The development direction and phase plan live in [`CLAUDE.md`](CLAUDE.md). The
-original course version is kept untouched as a separate, single-device demo.
+Design rationale for every major decision lives in
+[`docs/DESIGN.md`](docs/DESIGN.md); the bugs worth remembering are written up
+in [`docs/DEBUGGING.md`](docs/DEBUGGING.md).
 
 ## License
 

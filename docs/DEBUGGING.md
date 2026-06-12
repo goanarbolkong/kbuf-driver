@@ -2,7 +2,7 @@
 
 A running record of non-obvious bugs. Format per entry:
 **symptom → investigation → root cause → fix.** These are kept because the
-reasoning is the portfolio, not just the final code.
+reasoning is worth as much as the final code.
 
 ---
 

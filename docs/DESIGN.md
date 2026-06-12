@@ -348,4 +348,5 @@ the boot needs a readable kernel image (host `/boot/vmlinuz-*` is typically mode
   but the mutex it holds cannot exclude an in-flight lock-free SPSC operation.
   The current contract is "switch only when no I/O is in progress." A fully
   race-free online switch would need to quiesce both sides (e.g. an RCU-style
-  grace period or a per-side epoch). Deferred — not needed for the lab use.
+  grace period or a per-side epoch). Deferred — not needed for the current
+  single-host use cases.

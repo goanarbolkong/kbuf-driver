@@ -1,18 +1,19 @@
-# kbuf_driver — Project Context
+# kbuf — Project Context
 
 ## What this is
-A Linux kernel character device driver implementing a producer/consumer circular
-buffer. Originally a university OS course project, now being upgraded to a
-professional-grade portfolio project for an NVIDIA System Software Engineering
-internship application (verification infrastructure team, C++/Python, Shanghai).
+A standalone Linux kernel character device driver implementing a
+producer/consumer circular buffer, developed as a showcase of systems
+programming and verification practice: every feature lands with tests,
+documentation, and (where relevant) benchmarks.
 
-Current state: working v1 with mutex synchronization, wait queues, O_NONBLOCK
-support, and a /proc interface. Known debugging history includes a mutex/sleep
-ordering deadlock, -ERESTARTSYS signal handling, and Secure Boot MOK signing.
+Current state: all nine phases below are complete and QEMU-verified — multiple
+instances (static and dynamic via /dev/kbuf-ctl), versioned ioctl UAPI,
+lock-free SPSC mode, mmap zero-copy magic ring, debugfs + tracepoints,
+CI, and a bare-metal benchmark report with figures.
 
 ## Goal
-Upgrade through the phases below. Every feature must come with tests,
-documentation, and (where relevant) benchmarks. The repo itself is the resume.
+Keep the quality bar: no feature without tests, no claim without a
+reproducible measurement, no design decision without a written rationale.
 
 ## Phase plan
 1. **Restructure** — split into src/ (kbuf_main.c, kbuf_ring.c, kbuf_proc.c,
@@ -51,8 +52,7 @@ documentation, and (where relevant) benchmarks. The repo itself is the resume.
 - Every nontrivial design decision gets a paragraph in docs/DESIGN.md.
 - Every gnarly bug encountered gets an entry in docs/DEBUGGING.md
   (symptom → investigation → root cause → fix).
-- All docs, comments, and commit messages in clear English (portfolio doubles
-  as English-proficiency evidence).
+- All docs, comments, and commit messages in clear English.
 - Commit style: small, logical commits with kernel-style subject lines
   ("kbuf: add poll support to file operations").
 - copy_from_user/copy_to_user can sleep — the "lock-free" path is still not
