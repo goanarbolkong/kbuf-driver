@@ -31,9 +31,11 @@ under QEMU, and a benchmark report with reproducible numbers.
   safe while a device is still open).
 - **Observable.** Per-device counters under `/sys/kernel/debug/kbuf/` and
   `TRACE_EVENT` tracepoints usable with `perf record -e 'kbuf:*'`.
-- **Verified, not vibes.** Functional + stress tests boot under QEMU (never
-  insmod'd blind on the dev host); CI runs `checkpatch --strict`, `sparse`, a
-  build matrix, and a best-effort QEMU boot. Benchmarks documented with full
+- **Verified, not vibes.** A **pytest verification framework** boots one
+  disposable QEMU VM per test — parameterized boot matrix, structured serial
+  markers, per-test console/dmesg artifacts, JUnit output — so an oops costs a
+  failed test, never the workstation. CI runs `checkpatch --strict`, `sparse`,
+  a build matrix, and the QEMU suite. Benchmarks documented with full
   methodology.
 
 ## Headline numbers
@@ -145,11 +147,17 @@ make bench      # build bench/kbuf_bench
 ## Run & test
 
 Experimental builds are validated **under QEMU**, never insmod'd directly on the
-development host:
+development host. The pytest framework boots one throwaway VM per test (~18 s
+for the whole suite with KVM) and captures per-test console + dmesg artifacts:
 
 ```sh
-scripts/run-qemu.sh     # boot a VM, insmod, run the full suite, print PASS/FAIL
+make verif                            # full suite, JUnit XML to .qemu/verif.xml
+python3 -m pytest verif -k spsc -q    # or any pytest selection
+scripts/run-qemu.sh                   # zero-dependency single-boot fallback
 ```
+
+See **[docs/VERIFICATION.md](docs/VERIFICATION.md)** for the architecture
+(cmdline-driven guest, structured serial markers, boot matrix).
 
 On a machine where host loading is acceptable, `make load` / `make unload` are
 provided; Secure Boot hosts require the module to be MOK-signed first
@@ -191,9 +199,10 @@ src/kbuf_debugfs.c    /sys/kernel/debug/kbuf/kbufN/ counter files
 src/kbuf_ctl.c        /dev/kbuf-ctl: runtime create/destroy (kref lifetime)
 src/kbuf_trace.h      TRACE_EVENT definitions (perf record -e 'kbuf:*')
 src/kbuf_internal.h   in-kernel types and cross-file prototypes
-tests/                user-space functional + stress tests
+tests/                user-space functional + stress tests (run inside QEMU)
+verif/                pytest verification framework (boots one VM per test)
 bench/                throughput benchmarks (kbuf_bench: mmap vs syscall)
-docs/                 DESIGN.md, DEBUGGING.md, BENCHMARKS.md
+docs/                 DESIGN.md, DEBUGGING.md, BENCHMARKS.md, VERIFICATION.md
 scripts/              QEMU harness, bare-metal bench, signing, plotting
 ```
 
@@ -211,6 +220,10 @@ scripts/              QEMU harness, bare-metal bench, signing, plotting
 | 7 | debugfs + tracepoints | ✅ done (verified under QEMU) |
 | 8 | functional suite + CI | ✅ done (suite verified under QEMU) |
 | 9 | Benchmark report | ✅ done (docs/BENCHMARKS.md) |
+| 10 | pytest QEMU verification framework | ✅ done (docs/VERIFICATION.md) |
+| 11 | KCSAN/KASAN/lockdep gates + fault injection | 🚧 planned |
+| 12 | C++17 RAII library (kbuf++) + GoogleTest | 🚧 planned |
+| 13 | dma-buf exporter | 🚧 planned |
 
 Design rationale for every major decision lives in
 [`docs/DESIGN.md`](docs/DESIGN.md); the bugs worth remembering are written up

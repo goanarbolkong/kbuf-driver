@@ -14,7 +14,7 @@ TESTS     := $(TEST_SRCS:.c=)
 BENCH_SRCS := $(wildcard bench/*.c)
 BENCHES   := $(BENCH_SRCS:.c=)
 
-.PHONY: all modules tests bench sparse checkpatch clean load unload status dmesg help
+.PHONY: all modules tests bench sparse checkpatch verif verif-smoke clean load unload status dmesg help
 
 all: modules tests
 
@@ -45,6 +45,14 @@ CHECKPATCH_FILES := $(filter-out src/kbuf_trace.h,$(wildcard src/*.c src/*.h)) \
 		    include/kbuf.h
 checkpatch:
 	$(KDIR)/scripts/checkpatch.pl --strict --no-tree -f $(CHECKPATCH_FILES)
+
+## verif: full pytest verification suite under QEMU (one boot per test)
+verif:
+	python3 -m pytest verif --junitxml=.qemu/verif.xml
+
+## verif-smoke: single-boot sanity check (fast; what CI runs without KVM)
+verif-smoke:
+	python3 -m pytest verif -m smoke --junitxml=.qemu/verif-smoke.xml
 
 clean:
 	$(MAKE) -C $(KDIR) M=$(PWD) clean

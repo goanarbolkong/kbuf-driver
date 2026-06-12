@@ -30,6 +30,12 @@ bench/*.bin
 # QEMU harness build dir (kernel image, initramfs, console log)
 .qemu/
 
+# Python verification framework
+verif/_artifacts/
+__pycache__/
+.pytest_cache/
+.venv/
+
 # Bare-metal benchmark run artifacts
 .bench-baremetal.log
 .saved-governor

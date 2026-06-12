@@ -44,6 +44,18 @@ reproducible measurement, no design decision without a written rationale.
    governor, 10 runs, error bars), throughput vs message size for
    {mutex, lock-free, mmap, pipe(2)}, latency percentiles, false-sharing
    before/after experiment, discussion section.
+10. **pytest verification framework** — verif/: one QEMU boot per test,
+    cmdline-driven guest (kbuf.cmd=/kbuf.ndevices=), structured serial
+    markers, per-test console/dmesg artifacts, JUnit XML, ndevices boot
+    matrix, CI integration. docs/VERIFICATION.md.
+11. **Race/memory verification gates** — debug kernel configs (KCSAN against
+    the lock-free SPSC ring, KASAN, lockdep, kmemleak) booted by the
+    framework; failslab fault-injection scenario; document findings.
+12. **C++ RAII library** — include/kbufpp.hpp: move-only device + mmap-ring
+    handles, span-based API; GoogleTest suite run inside QEMU via the
+    framework; CI job.
+13. **dma-buf exporter** — export the data ring as a dma-buf fd
+    (KBUF_IOCEXPORT); attach/map/vmap ops; importer test; DESIGN.md section.
 
 ## Conventions & quality bar
 - Kernel coding style; all patches must pass `checkpatch.pl --strict`.

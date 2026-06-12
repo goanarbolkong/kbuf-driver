@@ -40,11 +40,11 @@ jobs:
       - name: sparse (make C=2)
         run: make sparse KDIR=/lib/modules/$(uname -r)/build
 
-  # Boot a throwaway VM, insmod the module, and run the full functional suite.
-  # Needs a readable kernel image and (for usable speed) KVM, so it is
-  # best-effort on hosted runners; treat the static job as the hard gate. On a
-  # KVM-capable runner it is the real end-to-end check.
-  qemu:
+  # Boot throwaway VMs and run the pytest verification suite (one boot per
+  # test, JUnit + per-test console/dmesg artifacts). Standard GitHub Linux
+  # runners expose /dev/kvm; still best-effort because boot speed and kernel
+  # availability vary — treat the static job as the hard gate.
+  verif:
     runs-on: ubuntu-latest
     needs: static
     continue-on-error: true
@@ -55,12 +55,29 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential busybox-static \
-            qemu-system-x86 linux-headers-$(uname -r)
+            qemu-system-x86 linux-headers-$(uname -r) python3-pytest
+
+      - name: Enable KVM for the runner user
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
 
       - name: Provision a readable kernel image
         run: |
           mkdir -p .qemu
           sudo install -m644 /boot/vmlinuz-$(uname -r) .qemu/bzImage
 
-      - name: Boot QEMU and run the suite
-        run: ./scripts/run-qemu.sh
+      - name: Run the verification suite
+        run: make verif
+
+      - name: Upload verification artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verif-results
+          path: |
+            .qemu/verif.xml
+            verif/_artifacts/
+          if-no-files-found: ignore
