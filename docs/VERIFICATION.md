@@ -50,6 +50,7 @@ final marker (hang or panic; the boot is reaped by a host-side timeout).
 | `test_stress.py` | `stress` | lock-free SPSC and mmap magic-ring integrity under pinned producer/consumer load |
 | `test_module.py` | `module` | rmmod refused (EBUSY) while an fd is open; full unload/reload cycle |
 | `test_boot_matrix.py` | `matrix` | `ndevices=` boot matrix: 1, 2, 8, 64 |
+| `test_gates.py` | `gate` | memory/race gates under an instrumented kernel (see below) |
 
 ## Running
 
@@ -70,3 +71,46 @@ CI uploads them together with the JUnit report on every run.
 
 The original single-boot shell harness (`scripts/run-qemu.sh`) is kept as a
 zero-dependency fallback and runs the same guest binaries.
+
+## Memory & race verification gates
+
+The default suite runs against a stock kernel. The `gate` tests instead boot a
+**purpose-built debug kernel** so the instrumentation can catch defects the
+functional tests cannot observe — use-after-free, out-of-bounds, data races on
+the lock-free ring, and leaks on error paths.
+
+`scripts/build-debug-kernel.sh` builds two variants from upstream source:
+
+| variant | configuration | catches |
+|---|---|---|
+| `kasan` | KASAN (generic, vmalloc, inline) + kmemleak + lockdep + `failslab` fault injection | OOB/UAF on the slot buffers and the mmap magic ring; leaks and bad unwinds on `-ENOMEM` error paths; lock-order violations |
+| `kcsan` | KCSAN data-race detector + lockdep | unsynchronised access in the SPSC release/acquire handoff |
+
+```sh
+# build once (downloads + builds a kernel; tens of minutes, needs ~a few GB
+# of disk and flex/bison/libelf-dev/libssl-dev):
+./scripts/build-debug-kernel.sh kasan
+
+# then run the whole suite, gates included, on that kernel:
+python3 -m pytest verif --kbuf-variant=kasan
+```
+
+With `--kbuf-variant` set, the framework rebuilds `kbuf.ko` against the debug
+kernel's tree (so the module layout matches), boots that kernel, widens the
+per-boot timeouts (instrumentation is slow), and **re-runs the existing
+workloads under the instrumentation in addition to the gate-only tests**. Any
+KASAN / KCSAN / lockdep / BUG signature in the captured serial log fails the
+boot — `BootResult.oops` greps for exactly those markers.
+
+The gate-only test `test_failslab_unwind` drives `verif/scenarios/failslab.sh`:
+it turns on slab fault injection scoped to the workload task
+(`/proc/self/make-it-fail`), runs `tests/fault_resize` to hammer
+`KBUF_IOCRESIZE` so the ring-allocation path fails on ~10 % of allocations, and
+then asks kmemleak to confirm nothing leaked. The driver must return `-ENOMEM`,
+unwind without a splat, and leave the device fully functional.
+
+Because the kernel build is heavy, the gates do **not** run on every push. CI
+exposes them as a separate `gates` job triggered by `workflow_dispatch` or a
+weekly schedule; it installs the toolchain, builds each variant, and uploads
+the per-test console/dmesg artifacts and JUnit reports. On a workstation short
+on disk or build dependencies, run them in CI rather than locally.
