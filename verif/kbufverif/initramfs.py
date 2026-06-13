@@ -88,14 +88,22 @@ def find_busybox():
     return bb
 
 
-def build_image(repo: Path, build_dir: Path) -> Path:
-    """Build module + static tests + initramfs; return the cpio.gz path."""
+def build_image(repo: Path, build_dir: Path, kdir: Path = None) -> Path:
+    """Build module + static tests + initramfs; return the cpio.gz path.
+
+    When ``kdir`` is given the module is built against that kernel tree (a
+    debug-variant build) so its layout matches the guest kernel that will load
+    it; otherwise it builds against the running kernel's headers.
+    """
     repo = Path(repo)
     build_dir = Path(build_dir)
     root = build_dir / "verif-initramfs"
     out = build_dir / "verif-initramfs.cpio.gz"
 
-    _check(["make", "-C", str(repo), "modules"])
+    make_modules = ["make", "-C", str(repo), "modules"]
+    if kdir is not None:
+        make_modules.append(f"KDIR={kdir}")
+    _check(make_modules)
 
     if root.exists():
         shutil.rmtree(root)

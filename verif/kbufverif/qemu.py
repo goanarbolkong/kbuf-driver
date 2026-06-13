@@ -87,3 +87,29 @@ def resolve_kernel(repo: Path) -> Path:
     raise RuntimeError(
         f"no readable kernel image; provision one:\n"
         f"    sudo install -D -m644 {host} {provisioned}")
+
+
+def resolve_variant(repo: Path, variant: str):
+    """Resolve a debug-kernel variant built by scripts/build-debug-kernel.sh.
+
+    Returns ``(kernel_image, kdir)`` read from ``.qemu/debug-<variant>.env``.
+    ``kdir`` is the variant's build tree; the module must be rebuilt against it
+    so its layout matches the debug kernel that will load it.
+    """
+    env = Path(repo) / ".qemu" / f"debug-{variant}.env"
+    if not env.is_file():
+        raise RuntimeError(
+            f"variant '{variant}' not built; run:\n"
+            f"    ./scripts/build-debug-kernel.sh {variant}")
+    vals = {}
+    for line in env.read_text().splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            vals[k.strip()] = v.strip()
+    kernel = Path(vals.get("KERNEL", ""))
+    kdir = Path(vals.get("KDIR", ""))
+    if not kernel.is_file():
+        raise RuntimeError(f"{env} points at a missing kernel: {kernel}")
+    if not kdir.is_dir():
+        raise RuntimeError(f"{env} points at a missing KDIR: {kdir}")
+    return kernel, kdir

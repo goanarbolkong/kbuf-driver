@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from kbufverif import build_image
-from kbufverif.qemu import QemuRunner, resolve_kernel
+from kbufverif.qemu import QemuRunner, resolve_kernel, resolve_variant
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -21,10 +21,34 @@ def pytest_addoption(parser):
     parser.addoption(
         "--kbuf-artifacts", default=str(REPO / "verif" / "_artifacts"),
         help="directory for per-test console/dmesg artifacts")
+    parser.addoption(
+        "--kbuf-variant", default=None, choices=["kasan", "kcsan"],
+        help="boot a debug-kernel variant built by "
+             "scripts/build-debug-kernel.sh; enables the gate tests")
 
 
 @pytest.fixture(scope="session")
-def runner():
+def variant(request):
+    return request.config.getoption("--kbuf-variant")
+
+
+def pytest_collection_modifyitems(config, items):
+    """Gate tests only make sense on an instrumented kernel; skip otherwise."""
+    if config.getoption("--kbuf-variant"):
+        return
+    skip = pytest.mark.skip(reason="needs --kbuf-variant (KASAN/KCSAN kernel)")
+    for item in items:
+        if "gate" in item.keywords:
+            item.add_marker(skip)
+
+
+@pytest.fixture(scope="session")
+def runner(variant):
+    if variant:
+        kernel, kdir = resolve_variant(REPO, variant)
+        initrd = build_image(REPO, REPO / ".qemu", kdir=kdir)
+        # Instrumented kernels need more headroom than the 512 MiB default.
+        return QemuRunner(kernel, initrd, mem=2048)
     kernel = resolve_kernel(REPO)
     initrd = build_image(REPO, REPO / ".qemu")
     return QemuRunner(kernel, initrd)
@@ -33,11 +57,13 @@ def runner():
 class VM:
     """Boots one disposable VM per ``run()`` call."""
 
-    def __init__(self, runner, artifacts: Path):
+    def __init__(self, runner, artifacts: Path, slow: bool = False):
         self._runner = runner
         self._artifacts = artifacts
-        # TCG (no KVM) boots take minutes, not seconds.
-        self.default_boot_timeout = 120 if runner.kvm else 1200
+        # TCG (no KVM) boots take minutes, not seconds; KASAN/KCSAN
+        # instrumentation slows even a KVM guest by a large factor.
+        base = 120 if runner.kvm else 1200
+        self.default_boot_timeout = base * 4 if slow else base
 
     def run(self, cmd=None, ndevices=None, guest_timeout=None,
             noinsmod=False, boot_timeout=None, expect_done=True):
@@ -68,7 +94,7 @@ class VM:
 
 
 @pytest.fixture
-def vm(runner, request):
+def vm(runner, request, variant):
     base = Path(request.config.getoption("--kbuf-artifacts"))
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", request.node.nodeid)
-    return VM(runner, base / safe)
+    return VM(runner, base / safe, slow=bool(variant))
