@@ -27,3 +27,15 @@ def test_roundtrip_observability(vm):
     res = vm.run(cmd="/scenarios/roundtrip.sh")
     assert res.rc("cmd") == 0
     assert not res.oops
+
+
+@pytest.mark.functional
+def test_trace_backpressure(vm):
+    """Fast producer vs slow consumer: the kbuf:* tracepoints must show the
+    8-slot ring saturate (backpressure) and fire wakeups. Also the data source
+    for docs/img/trace_timeline.png (scripts/plot_trace.py)."""
+    res = vm.run(cmd="/scenarios/trace_capture.sh")
+    assert res.rc("cmd") == 0
+    assert not res.oops
+    assert "occ=8" in res.serial, "ring never saturated (no backpressure seen)"
+    assert "kbuf_wakeup" in res.serial, "no wakeup events recorded"

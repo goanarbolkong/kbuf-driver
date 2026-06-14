@@ -135,6 +135,21 @@ See **[docs/DESIGN.md](docs/DESIGN.md)** for a paragraph per design decision and
 (including a use-after-free in the kref release path that QEMU caught before the
 host ever saw it).
 
+## Observability
+
+The driver carries `TRACE_EVENT` tracepoints and per-device debugfs counters
+(Phase 7). The figure below is **not a mock-up** — it is a live `kbuf:*` ftrace
+capture from one QEMU boot, a fast producer against a slow consumer on the
+8-slot blocking ring. Each produce/consume event reports the resulting
+occupancy, so plotting the stream over time shows the ring saturate within
+milliseconds and then stay pinned at its depth: the producer is **blocked on
+backpressure**, paced one slot at a time by the consumer, until the final drain.
+
+![kbuf tracepoint timeline](docs/img/trace_timeline.png)
+
+Capture + plot it yourself with `python3 scripts/plot_trace.py` (boots a VM,
+enables the tracepoints, runs the workload, renders the figure).
+
 ## Build
 
 ```sh
@@ -167,7 +182,8 @@ Reproduce the benchmarks and regenerate the figures:
 
 ```sh
 scripts/run-baremetal-bench.sh   # sign + pin governor + load + bench + teardown
-python3 scripts/plot_bench.py    # regenerate docs/img/*.png from the recorded run
+python3 scripts/plot_bench.py    # regenerate the benchmark figures (recorded run)
+python3 scripts/plot_trace.py    # capture a live ftrace timeline under QEMU + plot
 ```
 
 ## Benchmarks

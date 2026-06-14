@@ -196,6 +196,17 @@ strict FIFO order and byte-for-byte integrity, and exercising the wait-queue
 fallback heavily (the run logs thousands of producer sleeps). It restores
 blocking mode before exiting.
 
+**What it looks like.** The figure below is a live `kbuf:*` ftrace capture from
+one QEMU boot of that test in SPSC mode: a producer pinned to one core, a
+consumer pinned to another. ftrace tags each `kbuf_produce`/`kbuf_consume` event
+with the CPU it ran on, so every line drawn is one message's
+`smp_store_release` on the producer core handed to the matching
+`smp_load_acquire` on the consumer core — and the occupancy hugs 1, the opposite
+of the blocking path's backpressure plateau (§8). Reproduce with
+`scripts/plot_spsc.py` (capture script: `verif/scenarios/spsc_capture.sh`).
+
+![lock-free SPSC cross-core hand-off](img/spsc_handoff.png)
+
 ## 7. mmap zero-copy ring — the "magic ring buffer" (Phase 6)
 
 **Decision.** Give each device an mmap-able byte ring that user space drives
@@ -279,6 +290,17 @@ stream, near-zero cost when disabled); debugfs answers "what is the state right
 now" (cheap polling). The QEMU harness enables the tracepoints, runs the whole
 suite, then confirms a debugfs counter advanced and that `kbuf_produce` events
 landed in the trace buffer.
+
+**What it looks like.** The figure below is not a mock-up: it is a live
+`kbuf:*` ftrace capture from one QEMU boot, a fast producer against a slow
+consumer on the 8-slot blocking ring. Each `kbuf_produce`/`kbuf_consume` event
+carries the resulting occupancy, so plotting it over time shows the ring
+saturating within milliseconds and then pinned at the depth — the producer
+blocked on backpressure, paced one slot at a time by the consumer, until the
+final drain. Reproduce with `scripts/plot_trace.py` (capture script:
+`verif/scenarios/trace_capture.sh`).
+
+![kbuf tracepoint timeline](img/trace_timeline.png)
 
 ## 9. Test suite and CI (Phase 8)
 
