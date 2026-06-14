@@ -8,13 +8,17 @@
  *   KBUF_IOCRESET  - zero the counters (peak is reset to the current depth).
  *   KBUF_IOCRESIZE - change ring geometry; only when the ring is empty, else
  *                    -EBUSY (see docs/DESIGN.md for the rationale).
- *   KBUF_IOCSMODE  - select blocking vs lock-free SPSC mode. SPSC is not yet
- *                    implemented (Phase 5), so it returns -EOPNOTSUPP.
+ *   KBUF_IOCSMODE  - select blocking vs lock-free SPSC mode (only on an idle,
+ *                    empty ring; else -EBUSY).
+ *   KBUF_IOCEXPORT - export the mmap data ring as a dma-buf fd (Phase 13).
+ *   KBUF_IOCIMPORT - run the in-kernel importer self-test on a dma-buf fd.
  *
  * Every command acts on the device the fd was opened against
  * (filp->private_data), so each /dev/kbufN is controlled independently.
  */
 #include <linux/errno.h>
+#include <linux/fdtable.h>
+#include <linux/file.h>
 #include <linux/fs.h>
 #include <linux/kernel.h>
 #include <linux/log2.h>
@@ -151,6 +155,32 @@ static long kbuf_ioc_smode(struct kbuf_dev *dev, unsigned long arg)
 	return 0;
 }
 
+static long kbuf_ioc_export(struct kbuf_dev *dev, unsigned long arg)
+{
+	int fd = kbuf_dmabuf_export(dev);
+
+	if (fd < 0)
+		return fd;
+	if (put_user(fd, (int __user *)arg)) {
+		/*
+		 * The caller will never learn the fd, so close it here rather
+		 * than leak it into their table.
+		 */
+		close_fd(fd);
+		return -EFAULT;
+	}
+	return 0;
+}
+
+static long kbuf_ioc_import(unsigned long arg)
+{
+	int fd;
+
+	if (get_user(fd, (int __user *)arg))
+		return -EFAULT;
+	return kbuf_dmabuf_import_selftest(fd);
+}
+
 long kbuf_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	struct kbuf_dev *dev = filp->private_data;
@@ -169,6 +199,10 @@ long kbuf_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		return kbuf_ioc_resize(dev, arg);
 	case KBUF_IOCSMODE:
 		return kbuf_ioc_smode(dev, arg);
+	case KBUF_IOCEXPORT:
+		return kbuf_ioc_export(dev, arg);
+	case KBUF_IOCIMPORT:
+		return kbuf_ioc_import(arg);
 	default:
 		return -ENOTTY;
 	}

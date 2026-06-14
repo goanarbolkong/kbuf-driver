@@ -13,19 +13,15 @@ Module.symvers
 .tmp_versions/
 .cache.mk
 
-# Built user-space test/bench binaries
-tests/test_producer
-tests/test_consumer
-tests/test_nonblock
-tests/test_poll
-tests/test_ioctl
-tests/test_multi
-tests/test_spsc
-tests/test_mmap
-tests/test_edge
-tests/test_ctl
+# Built user-space test/bench binaries (sources are *.c / *.cpp)
+tests/*
+!tests/*.c
+!tests/*.cpp
 bench/kbuf_bench
 bench/*.bin
+
+# Vendored GoogleTest (fetched by scripts/fetch-googletest.sh)
+third_party/
 
 # QEMU harness build dir (kernel image, initramfs, console log)
 .qemu/

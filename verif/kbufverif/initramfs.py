@@ -76,6 +76,19 @@ def _check(cmd, **kw):
     return subprocess.run(cmd, check=True, capture_output=True, text=True, **kw)
 
 
+def gtest_paths(repo: Path):
+    """Return (libgtest.a, include-dir) for a statically built GoogleTest."""
+    repo = Path(repo)
+    lib = repo / "third_party" / "libgtest.a"
+    incs = sorted((repo / "third_party").glob("googletest-*/googletest/include"))
+    return lib, (incs[0] if incs else None)
+
+
+def gtest_available(repo: Path) -> bool:
+    lib, inc = gtest_paths(repo)
+    return lib.is_file() and inc is not None and shutil.which("g++") is not None
+
+
 def find_busybox():
     bb = shutil.which("busybox")
     if not bb:
@@ -123,6 +136,17 @@ def build_image(repo: Path, build_dir: Path, kdir: Path = None) -> Path:
     for src in sorted((repo / "bench").glob("*.c")):
         _check(["gcc", "-static", "-O2", f"-I{repo}/include",
                 "-o", str(root / "bench" / src.stem), str(src), "-lm"])
+
+    # C++ (kbuf++) tests link a statically-built GoogleTest. They are only
+    # built when that library is present (scripts/fetch-googletest.sh); the
+    # matching pytest skips otherwise, so the C suite never depends on it.
+    if gtest_available(repo):
+        lib, inc = gtest_paths(repo)
+        for src in sorted((repo / "tests").glob("*.cpp")):
+            _check(["g++", "-std=c++20", "-static", "-O2",
+                    f"-I{repo}/include", f"-I{inc}",
+                    "-o", str(root / "tests" / src.stem), str(src),
+                    str(lib), "-lpthread"])
 
     for sh in sorted((repo / "verif" / "scenarios").glob("*.sh")):
         dst = root / "scenarios" / sh.name

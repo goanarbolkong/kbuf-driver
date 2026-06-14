@@ -104,9 +104,10 @@ the statistics", not "flush the ring" — so it is safe to call on a live device
 device, updated under the same mutex as the ring, and persist across open/close.
 They are surfaced both via `KBUF_IOCGSTATS` and the enriched `/proc/kbuf_status`.
 
-**Mode (`KBUF_IOCSMODE`).** Validates the argument and stores it, but only
-`KBUF_MODE_BLOCKING` is implemented; `KBUF_MODE_SPSC` returns `-EOPNOTSUPP`
-until the lock-free path lands in Phase 5. Honest stub over a silent no-op.
+**Mode (`KBUF_IOCSMODE`).** Validates the argument and switches mode, but only
+on an idle, empty ring (else `-EBUSY`). In the Phase 3 scaffold only
+`KBUF_MODE_BLOCKING` existed and `KBUF_MODE_SPSC` returned `-EOPNOTSUPP`; the
+lock-free path landed in Phase 5 (§6), and both modes are now selectable.
 
 **Test.** `tests/test_ioctl.c` covers GSTATS accounting across a known
 produce/consume, RESET, RESIZE (empty OK / non-empty `-EBUSY` / bounds
@@ -315,14 +316,17 @@ partial-read datagram semantics and signal interruption → `EINTR`
 `rmmod` is correctly refused with `EBUSY` until the fd is released.
 
 **CI (`.github/workflows/ci.yml`).** A gating `static` job runs
-`checkpatch --strict`, builds the module + user-space programs, and runs sparse
-(`make C=2`) against the runner's kernel headers — these are the hard gate and
-pass cleanly. A second `qemu` job boots the module in a throwaway VM and runs
-the suite; it is marked best-effort because hosted runners lack a readable
-kernel image and KVM, but on a KVM-capable (e.g. self-hosted) runner it is the
-real end-to-end check, reusing the same `scripts/run-qemu.sh` used locally. The
-matrix is structured for multiple kernel-header versions; expanding it beyond
-the runner's own kernel needs a runner with those headers installed.
+`checkpatch --strict`, builds the module + user-space programs (including the
+kbuf++ GoogleTest binary), and runs sparse (`make C=2`) against the runner's
+kernel headers — these are the hard gate and pass cleanly. A `verif` job boots
+throwaway VMs and runs the pytest suite (one boot per test, JUnit + per-test
+console/dmesg artifacts); it is best-effort because boot speed and kernel
+availability vary across hosted runners. A third `gates` job builds the
+instrumented KASAN/KCSAN kernels and re-runs the workloads under them; it is
+heavy, so it is `workflow_dispatch`/scheduled only (see §11 of
+docs/VERIFICATION.md). The static matrix is structured for multiple
+kernel-header versions; expanding it beyond the runner's own kernel needs a
+runner with those headers installed.
 
 ## 10. Dynamic devices — /dev/kbuf-ctl (Phase 4 stretch)
 
@@ -353,6 +357,82 @@ looked up in the dynamic list) instead of `container_of`.
 then tears down any devices the user left behind, draining the list under the
 lock and `kref_put`-ing each. Dynamic devices are not shown in `/proc` or
 debugfs (those iterate the static array) — a deliberate scope limit.
+
+## 11. dma-buf exporter (Phase 13)
+
+**Decision.** Let a device hand its mmap data ring to other kernel subsystems as
+a shared buffer. `KBUF_IOCEXPORT` wraps the existing `KBUF_MMAP_CAPACITY`-byte
+`vmalloc_user` ring (`dev->mmap_data`) in a dma-buf and returns an fd; the buffer
+is exactly the same set of physical pages the mmap zero-copy ring already hands
+to user space, so a dma-buf importer and an `mmap()` of `/dev/kbufN` alias one
+ring — zero copies between the two views. The point is interoperability: dma-buf
+is the lingua franca for passing buffers between drivers (GPU, V4L2, DRM), which
+is precisely the kind of zero-copy plumbing this project is about.
+
+```mermaid
+flowchart LR
+    ring["dev->mmap_data<br/>vmalloc_user, 64 KiB"]
+    ring --> mmap["mmap() of /dev/kbufN<br/>(magic ring, userspace)"]
+    ring --> dbuf["dma-buf fd<br/>(KBUF_IOCEXPORT)"]
+    dbuf --> imp["importer: attach → map sg_table → vmap"]
+```
+
+**Exporter ops.** The exporter implements the full producer contract, not just
+`mmap`: `map_dma_buf`/`unmap_dma_buf` build an `sg_table` over the ring's pages
+(`vmalloc_to_page` per page) and `dma_map_sgtable` it for an attached device;
+`vmap` returns the ring's *existing* contiguous kernel address (it is vmalloc'd,
+so already virtually contiguous) with no second mapping; `mmap` faults the pages
+into a userspace VMA via `remap_vmalloc_range` (a flat single map, deliberately
+*not* the driver's double-mapped magic ring); `begin/end_cpu_access` are no-ops
+because the ring is plain cache-coherent RAM.
+
+**Lifetime — the buffer outlives its creator.** `dma_buf_export()` sets
+`exp_info.owner = THIS_MODULE`, so the module cannot be unloaded while any
+exported fd is live. A *dynamic* device (`/dev/kbufdN`) can still be destroyed
+underneath an exported buffer, so export takes a `kref` on the device and the
+dma-buf `release` callback drops it — the ring's pages stay valid for exactly as
+long as the dma-buf exists, independent of the originating fd. This is the same
+kref that guards destroy-while-open (§10), reused for destroy-while-exported.
+
+**In-kernel importer self-test.** `KBUF_IOCIMPORT` takes a dma-buf fd and runs
+the importer side entirely in the kernel: `dma_buf_get` → `dma_buf_attach`
+(against a synthetic platform device given a 64-bit DMA mask, since QEMU has no
+real DMA engine to borrow) → `dma_buf_map_attachment` → `dma_buf_vmap` → read
+the first word and echo it into the second → unwind. No userspace-only test can
+reach `attach`/`map_dma_buf`/`vmap`, so this is how the verification suite proves
+the exporter end to end; the echo lets `tests/test_dmabuf.c` confirm, through the
+device mmap, that the importer mapped the very same pages. (We deliberately do
+*not* `mmap` the dma-buf fd from userspace in the test — on 6.17 that trips a
+benign `path_noexec` warning on the dma-buf pseudo-mount; see DEBUGGING.md §7.)
+
+## 12. C++ RAII wrapper — kbuf++ (Phase 12)
+
+**Decision.** Ship a header-only, modern-C++ veneer over the C ABI so callers get
+deterministic cleanup and a typed interface without giving up the zero-overhead
+inline path. `include/kbufpp.hpp` (C++20) is a thin layer over `kbuf.h` and
+`libkbuf.h`: no allocation, no virtual dispatch, every method an inline forward
+to a syscall/ioctl or a libkbuf atomic.
+
+**Handles are move-only.** `kbuf::unique_fd` owns a descriptor and closes it
+once; `kbuf::Device` and `kbuf::MappedRing` build on it. All three delete copy
+and define `noexcept` move, so a fd / mmap is released exactly once, on scope
+exit, even when an exception unwinds — and a moved-from handle is empty. This is
+the RAII guarantee the raw C path leaves to the caller.
+
+**Span-based, throwing API.** Byte I/O and the ring fast path take
+`std::span<std::byte>` / `std::span<const std::byte>` rather than a bare
+pointer+length, so length and buffer travel together. Construction and ioctl
+failures throw `std::system_error` carrying the `errno`; the SPSC ring `read`/
+`write` stay `noexcept` and return a byte count, matching libkbuf's non-throwing
+fast path. `MappedRing::data()` exposes the raw mapped bytes for callers that
+index directly (e.g. cross-checking a dma-buf export).
+
+**Tested with GoogleTest, in the same VM.** `tests/test_kbufpp.cpp` is a
+GoogleTest suite covering byte round-trips, the ioctl UAPI, move semantics, the
+mmap ring, and dma-buf export/import. It links a statically built GoogleTest
+(fetched by `scripts/fetch-googletest.sh`, not vendored) and runs inside the
+QEMU guest exactly like the C tests; the pytest that drives it skips cleanly when
+the library has not been built, so the C suite never depends on it.
 
 ## Test harness (QEMU)
 

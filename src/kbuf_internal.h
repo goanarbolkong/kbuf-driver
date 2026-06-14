@@ -151,6 +151,12 @@ int  kbuf_mmap(struct file *filp, struct vm_area_struct *vma);
 void kbuf_debugfs_register(void);
 void kbuf_debugfs_unregister(void);
 
+/* dma-buf exporter - src/kbuf_dmabuf.c */
+int  kbuf_dmabuf_export(struct kbuf_dev *dev);		/* returns a new fd     */
+long kbuf_dmabuf_import_selftest(int fd);		/* in-kernel importer    */
+int  kbuf_dmabuf_init(void);				/* synthetic import dev  */
+void kbuf_dmabuf_exit(void);
+
 /* dynamic devices / control device - src/kbuf_ctl.c */
 void kbuf_dev_release(struct kref *ref);	/* kref release for dynamic devs */
 struct kbuf_dev *kbuf_dyn_get(int minor_off);	/* lookup + kref_get, or NULL    */

@@ -185,3 +185,38 @@ freeing memory the latency p50 dropped from ~32 µs to **~2.8 µs** with a tail
 under 4 µs. A first attempt left `SCHED_FIFO` on by default and, combined with
 the swapping host, produced a multi-minute apparently-hung run; RT is now strictly
 opt-in. See `bench/kbuf_bench.c` and `scripts/run-baremetal-bench.sh`.
+
+## 7. dma-buf test tripped a `path_noexec` WARN from a clean mmap
+
+**Symptom.** The first `tests/test_dmabuf.c` printed `RESULT: PASS` for every
+check — including the in-kernel importer reading back the magic `0xcafef00d` —
+yet the verification framework still failed the test: `res.oops` was true. The
+serial log carried a `WARNING: CPU: 0 ... at fs/exec.c:118 path_noexec+0x47` with
+a call trace, and the harness greps the console for `WARNING|Call Trace|...` and
+treats any hit as a kernel splat.
+
+**Investigation.** The top of the trace named `kbuf_ioctl`, which pointed the
+finger at the new export/import ioctls — but that frame was a stale `?`-prefixed
+entry (an unreliable stack guess). The reliable frames were
+`do_mmap → vm_mmap_pgoff → ksys_mmap_pgoff → __x64_sys_mmap`, and the saved
+`ORIG_RAX` was `0x9` (`mmap`), with `RSI=0x10000` (64 KiB) and `R08=4` (fd 4 —
+the dma-buf). So the warning came from the userspace `mmap(dbuf_fd)` in the
+test, not from any ioctl. `path_noexec()` is called by `do_mmap` for *every*
+file-backed mapping to decide `VM_MAYEXEC`; on 6.17 it carries a hardened
+consistency `WARN_ON_ONCE` over the mount's flags. It fires before the
+exporter's own `.mmap` op ever runs, so no exporter code is involved.
+
+**Root cause.** The dma-buf pseudo-mount that backs an exported buffer's file
+does not satisfy 6.17's new noexec/`mnt_flags` consistency check, so the first
+`mmap` of any dma-buf fd emits a one-shot `WARN`. It is benign (the function
+still returns the right answer) and outside this module's control — but the
+verification harness, correctly, refuses to ignore a kernel `WARNING`.
+
+**Fix.** Don't reach the warning. The test no longer `mmap`s the dma-buf fd from
+userspace; it proves the same property — that the dma-buf aliases the ring — by
+seeding a word through the device mmap and having `KBUF_IOCIMPORT` (the in-kernel
+importer: attach → map sg_table → vmap) echo it back, which the test then reads
+through the device mmap. This exercises *more* of the exporter (the whole
+attach/map/vmap path, not just `.mmap`) while keeping the console splat-free. The
+`.mmap` op stays implemented for real importers; the finding is recorded here so
+the next reader does not mistake the benign warning for an exporter bug.

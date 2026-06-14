@@ -378,6 +378,12 @@ static int __init kbuf_init(void)
 		pr_warn("kbuf: proc_create failed (non-fatal)\n");
 	kbuf_debugfs_register();
 
+	ret = kbuf_dmabuf_init();
+	if (ret < 0) {
+		pr_err("kbuf: dma-buf init failed (%d)\n", ret);
+		goto err_dmabuf;
+	}
+
 	ret = kbuf_ctl_register();
 	if (ret < 0) {
 		pr_err("kbuf: control device registration failed (%d)\n", ret);
@@ -389,6 +395,8 @@ static int __init kbuf_init(void)
 	return 0;
 
 err_ctl:
+	kbuf_dmabuf_exit();
+err_dmabuf:
 	kbuf_debugfs_unregister();
 	kbuf_proc_unregister();
 	i = kbuf_ndevices;		/* all static devices were created */
@@ -405,6 +413,7 @@ err_free:
 static void __exit kbuf_exit(void)
 {
 	kbuf_ctl_unregister();		/* tear down any remaining dynamic devices */
+	kbuf_dmabuf_exit();
 	kbuf_debugfs_unregister();
 	kbuf_proc_unregister();
 	kbuf_teardown_devices(kbuf_ndevices);

@@ -8,13 +8,21 @@ PWD    := $(shell pwd)
 
 CC     := gcc
 CFLAGS := -Wall -Wextra -O2 -Iinclude
+CXX    := g++
+CXXFLAGS := -std=c++20 -Wall -Wextra -O2 -Iinclude
 
 TEST_SRCS := $(wildcard tests/*.c)
 TESTS     := $(TEST_SRCS:.c=)
 BENCH_SRCS := $(wildcard bench/*.c)
 BENCHES   := $(BENCH_SRCS:.c=)
 
-.PHONY: all modules tests bench sparse checkpatch verif verif-smoke clean load unload status dmesg help
+# kbuf++ GoogleTest binaries (built only after `make gtest`).
+GTEST_LIB := third_party/libgtest.a
+GTEST_INC := $(firstword $(wildcard third_party/googletest-*/googletest/include))
+CPP_SRCS  := $(wildcard tests/*.cpp)
+CPP_TESTS := $(CPP_SRCS:.cpp=)
+
+.PHONY: all modules tests bench cpp gtest sparse checkpatch verif verif-smoke clean load unload status dmesg help
 
 all: modules tests
 
@@ -33,6 +41,16 @@ bench: $(BENCHES)
 
 bench/%: bench/%.c
 	$(CC) $(CFLAGS) -o $@ $< -lm
+
+## gtest: fetch + statically build GoogleTest into third_party/
+gtest:
+	./scripts/fetch-googletest.sh
+
+## cpp: build the kbuf++ GoogleTest binaries (run `make gtest` first)
+cpp: $(CPP_TESTS)
+
+tests/%: tests/%.cpp $(GTEST_LIB)
+	$(CXX) $(CXXFLAGS) -I$(GTEST_INC) -static -o $@ $< $(GTEST_LIB) -lpthread
 
 ## sparse: static analysis on the module (fix every warning)
 sparse:

@@ -73,7 +73,22 @@ struct kbuf_mmap_ctrl {
 #define KBUF_IOCRESET	_IO(KBUF_IOC_MAGIC,  3)
 #define KBUF_IOCSMODE	_IOW(KBUF_IOC_MAGIC, 4, int)
 
-#define KBUF_IOC_MAXNR 4
+/*
+ * dma-buf exporter (Phase 13). KBUF_IOCEXPORT wraps the device's mmap data
+ * ring (the same KBUF_MMAP_CAPACITY-byte buffer the mmap zero-copy ring uses)
+ * in a dma-buf and writes the new fd back through @arg. The fd can be mmap'd,
+ * shared with another driver, or imported for DMA; it keeps the ring alive even
+ * after the originating /dev/kbufN fd is closed.
+ *
+ * KBUF_IOCIMPORT runs the kernel-side importer self-test on a dma-buf fd passed
+ * in through @arg (attach + map sg_table + vmap + read-back). It returns 0 when
+ * the whole importer path succeeds, letting a userspace test exercise code no
+ * userspace-only path can reach.
+ */
+#define KBUF_IOCEXPORT	_IOR(KBUF_IOC_MAGIC, 5, int)	/* out: dma-buf fd  */
+#define KBUF_IOCIMPORT	_IOW(KBUF_IOC_MAGIC, 6, int)	/* in:  dma-buf fd  */
+
+#define KBUF_IOC_MAXNR 6
 
 /*
  * Control device (/dev/kbuf-ctl) — create and destroy kbuf devices at runtime.

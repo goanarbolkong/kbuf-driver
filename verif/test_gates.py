@@ -24,6 +24,7 @@ KASAN_WORKLOADS = [
     "test_mmap",    # vmalloc_user magic ring; OOB across the double map
     "test_ctl",     # dynamic create/destroy; kref lifetime, freed cdev
     "test_edge",    # partial reads + signal interruption error paths
+    "test_dmabuf",  # dma-buf export/import; sg_table + vmap, attach lifetime
 ]
 
 

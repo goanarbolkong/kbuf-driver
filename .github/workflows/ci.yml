@@ -42,6 +42,9 @@ jobs:
       - name: Build tests and benchmark
         run: make tests bench
 
+      - name: Build the kbuf++ GoogleTest suite
+        run: make gtest cpp
+
       - name: sparse (make C=2)
         run: make sparse KDIR=/lib/modules/$(uname -r)/build
 
@@ -73,6 +76,9 @@ jobs:
         run: |
           mkdir -p .qemu
           sudo install -m644 /boot/vmlinuz-$(uname -r) .qemu/bzImage
+
+      - name: Build GoogleTest (for the kbuf++ suite)
+        run: make gtest
 
       - name: Run the verification suite
         run: make verif
@@ -116,6 +122,9 @@ jobs:
             | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm || true
+
+      - name: Build GoogleTest (for the kbuf++ suite)
+        run: make gtest
 
       - name: Build the ${{ matrix.variant }} debug kernel
         run: ./scripts/build-debug-kernel.sh ${{ matrix.variant }}

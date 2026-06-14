@@ -46,7 +46,8 @@ final marker (hang or panic; the boot is reaped by a host-side timeout).
 | file | marker | what it proves |
 |---|---|---|
 | `test_smoke.py` | `smoke` | boot, insmod, device topology, /proc, debugfs |
-| `test_functional.py` | `functional` | nonblock, poll, ioctl, edge cases, multi-device, dynamic ctl, round-trip with tracepoint + debugfs counters |
+| `test_functional.py` | `functional` | nonblock, poll, ioctl, edge cases, multi-device, dynamic ctl, dma-buf export/import, round-trip with tracepoint + debugfs counters |
+| `test_cpp.py` | `functional` | the kbuf++ C++20 RAII wrapper, exercised by a GoogleTest suite (skipped unless GoogleTest is built) |
 | `test_stress.py` | `stress` | lock-free SPSC and mmap magic-ring integrity under pinned producer/consumer load |
 | `test_module.py` | `module` | rmmod refused (EBUSY) while an fd is open; full unload/reload cycle |
 | `test_boot_matrix.py` | `matrix` | `ndevices=` boot matrix: 1, 2, 8, 64 |
@@ -65,6 +66,11 @@ Requirements: `pytest`, `qemu-system-x86`, `busybox-static`, kernel headers,
 and a readable kernel image at `.qemu/bzImage` (the framework falls back to
 `/boot/vmlinuz-$(uname -r)` when that is world-readable). Without KVM the
 suite still runs, just slowly — per-boot timeouts widen automatically.
+
+The C++ `test_cpp.py` additionally needs a statically built GoogleTest; run
+`make gtest` (or `scripts/fetch-googletest.sh`) once and the framework compiles
+`tests/*.cpp` into the guest image. Until then it skips, so the C suite never
+depends on it.
 
 Artifacts land in `verif/_artifacts/<test-id>/{console.log,dmesg.txt}`;
 CI uploads them together with the JUnit report on every run.

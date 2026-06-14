@@ -10,6 +10,7 @@ FUNCTIONAL_TESTS = [
     "test_edge",       # partial-read datagram semantics, signal -> EINTR
     "test_multi",      # per-device ring independence
     "test_ctl",        # /dev/kbuf-ctl dynamic create/destroy (kref)
+    "test_dmabuf",     # dma-buf export/import + aliasing with the mmap ring
 ]
 
 

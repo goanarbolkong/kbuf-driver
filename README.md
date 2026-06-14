@@ -26,6 +26,16 @@ under QEMU, and a benchmark report with reproducible numbers.
   header-only `libkbuf` SPSC library with C11 atomics.
 - **Real UAPI.** Versioned ioctl interface (`KBUF_IOCGSTATS`, `KBUF_IOCRESIZE`,
   `KBUF_IOCRESET`, `KBUF_IOCSMODE`) plus per-device throughput stats.
+- **dma-buf interop.** `KBUF_IOCEXPORT` hands the data ring to other subsystems
+  as a **dma-buf** fd — the same pages the mmap ring uses, so a dma-buf importer
+  and an `mmap()` alias one buffer with no copy. The exporter implements the
+  full `attach`/`map_dma_buf`/`vmap`/`mmap` contract; an in-kernel importer
+  self-test exercises the device-attach path no userspace test can reach, and a
+  `kref` keeps the buffer alive after the originating fd (or device) is gone.
+- **Modern C++ veneer.** `include/kbufpp.hpp` — a header-only **C++20 RAII**
+  wrapper: move-only `Device` / `MappedRing` / `unique_fd` handles, a
+  `std::span<std::byte>` API, `std::system_error` on failure, zero overhead over
+  the C ABI. Covered by a **GoogleTest** suite run inside the same QEMU VM.
 - **Multiple instances.** `ndevices=` static minors *and* a `/dev/kbuf-ctl`
   control device for runtime create/destroy with **kref lifetime** (destroy is
   safe while a device is still open).
@@ -65,6 +75,7 @@ flowchart TB
     subgraph user["User space"]
         app["application<br/>open / read / write / ioctl / poll"]
         lib["libkbuf.h<br/>(header-only SPSC, C11 atomics)"]
+        cpp["kbufpp.hpp<br/>(C++20 RAII, std::span)"]
     end
 
     subgraph dev["Device nodes"]
@@ -79,16 +90,20 @@ flowchart TB
         mmap["kbuf_mmap.c<br/>magic-ring fault handler"]
         ioctl["kbuf_ioctl.c<br/>UAPI dispatch"]
         ctlc["kbuf_ctl.c<br/>kref lifetime"]
+        dbuf["kbuf_dmabuf.c<br/>dma-buf exporter"]
         obs["kbuf_proc.c · kbuf_debugfs.c · kbuf_trace.h"]
     end
 
     app --> n0 & nd
+    cpp -. wraps .-> app
     app -. mmap .-> lib
     lib -. shared pages .-> mmap
     app --> ctl
     n0 & nd --> main
     ctl --> ctlc
     main --> ring & mmap & ioctl
+    ioctl --> dbuf
+    dbuf -. exports pages .-> mmap
     ctlc --> main
     main --> obs
 ```
@@ -157,6 +172,7 @@ make            # builds kbuf.ko + the user-space test/bench programs
 make sparse     # static analysis (make C=2)
 make checkpatch # kernel coding-style check (--strict)
 make bench      # build bench/kbuf_bench
+make gtest cpp  # fetch + build GoogleTest, then the kbuf++ test binary
 ```
 
 ## Run & test
@@ -206,20 +222,22 @@ atomic read-modify-writes (1.2× for plain stores).
 ```
 include/kbuf.h        user/kernel ABI (ioctl numbers, kbuf_stats, mmap ctrl)
 include/libkbuf.h     user-space lib for the mmap zero-copy ring (SPSC)
+include/kbufpp.hpp    C++20 RAII wrapper (move-only handles, std::span API)
 src/kbuf_main.c       module lifecycle + file operations (blocking + SPSC)
 src/kbuf_ring.c       circular-buffer core: blocking + lock-free SPSC mechanics
 src/kbuf_proc.c       /proc/kbuf_status
-src/kbuf_ioctl.c      ioctl dispatch (stats, resize, reset, mode)
+src/kbuf_ioctl.c      ioctl dispatch (stats, resize, reset, mode, export/import)
 src/kbuf_mmap.c       mmap + magic-ring double-mapping fault handler
 src/kbuf_debugfs.c    /sys/kernel/debug/kbuf/kbufN/ counter files
 src/kbuf_ctl.c        /dev/kbuf-ctl: runtime create/destroy (kref lifetime)
+src/kbuf_dmabuf.c     dma-buf exporter + in-kernel importer self-test
 src/kbuf_trace.h      TRACE_EVENT definitions (perf record -e 'kbuf:*')
 src/kbuf_internal.h   in-kernel types and cross-file prototypes
-tests/                user-space functional + stress tests (run inside QEMU)
+tests/                user-space functional + stress tests (.c) + kbuf++ (.cpp)
 verif/                pytest verification framework (boots one VM per test)
 bench/                throughput benchmarks (kbuf_bench: mmap vs syscall)
 docs/                 DESIGN.md, DEBUGGING.md, BENCHMARKS.md, VERIFICATION.md
-scripts/              QEMU harness, bare-metal bench, signing, plotting
+scripts/              QEMU harness, bare-metal bench, signing, plotting, gtest
 ```
 
 ## Status
@@ -237,9 +255,9 @@ scripts/              QEMU harness, bare-metal bench, signing, plotting
 | 8 | functional suite + CI | ✅ done (suite verified under QEMU) |
 | 9 | Benchmark report | ✅ done (docs/BENCHMARKS.md) |
 | 10 | pytest QEMU verification framework | ✅ done (docs/VERIFICATION.md) |
-| 11 | KCSAN/KASAN/lockdep gates + fault injection | 🚧 planned |
-| 12 | C++17 RAII library (kbuf++) + GoogleTest | 🚧 planned |
-| 13 | dma-buf exporter | 🚧 planned |
+| 11 | KCSAN/KASAN/lockdep gates + fault injection | ✅ done (CI `gates` job, docs/VERIFICATION.md) |
+| 12 | C++20 RAII library (kbuf++) + GoogleTest | ✅ done (verified under QEMU) |
+| 13 | dma-buf exporter (`KBUF_IOCEXPORT`) | ✅ done (verified under QEMU) |
 
 Design rationale for every major decision lives in
 [`docs/DESIGN.md`](docs/DESIGN.md); the bugs worth remembering are written up
