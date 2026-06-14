@@ -7,6 +7,7 @@ zero-copy "magic ring"** that moves data with *no syscalls on the hot path*,
 observability via debugfs and perf tracepoints, a kselftest-style suite run
 under QEMU, and a benchmark report with reproducible numbers.
 
+[![ci](https://github.com/goanarbolkong/kbuf-driver/actions/workflows/ci.yml/badge.svg)](https://github.com/goanarbolkong/kbuf-driver/actions/workflows/ci.yml)
 ![C](https://img.shields.io/badge/C-kernel%20module-00599C?logo=c)
 ![Linux kernel](https://img.shields.io/badge/Linux-6.17-FCC624?logo=linux&logoColor=black)
 ![style](https://img.shields.io/badge/checkpatch-%2D%2Dstrict%20clean-success)
