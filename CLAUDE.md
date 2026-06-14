@@ -6,14 +6,17 @@ producer/consumer circular buffer, developed as a showcase of systems
 programming and verification practice: every feature lands with tests,
 documentation, and (where relevant) benchmarks.
 
-Current state: phases 1-9 complete and QEMU-verified — multiple instances
+Current state: all 13 phases complete and QEMU-verified — multiple instances
 (static and dynamic via /dev/kbuf-ctl), versioned ioctl UAPI, lock-free SPSC
 mode, mmap zero-copy magic ring, debugfs + tracepoints, CI, and a bare-metal
-benchmark report with figures. Phase 10 (pytest QEMU framework) is in; phase
-11 (memory/race gates: KASAN+kmemleak+lockdep+failslab, KCSAN) is wired into
-the framework and CI (the `gates` job), gated on a host with the kernel build
-toolchain — see docs/VERIFICATION.md. Phases 12-13 (C++ RAII library, dma-buf
-exporter) remain.
+benchmark report with figures. Phase 10 (pytest QEMU framework) and phase 11
+(memory/race gates: KASAN+kmemleak+lockdep+failslab, KCSAN) are wired into the
+framework and CI (the `gates` job), gated on a host with the kernel build
+toolchain — see docs/VERIFICATION.md. Phase 12 (kbuf++: a header-only C++20
+RAII wrapper, include/kbufpp.hpp, with a GoogleTest suite run in QEMU) and
+phase 13 (dma-buf exporter, KBUF_IOCEXPORT, src/kbuf_dmabuf.c, with an
+in-kernel importer self-test) are done. The project is feature-complete; work
+now is polish, hardening, and any new design notes.
 
 ## Goal
 Keep the quality bar: no feature without tests, no claim without a
