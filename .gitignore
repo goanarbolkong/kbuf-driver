@@ -46,3 +46,6 @@ MOK.der
 .vscode/
 *.swp
 *~
+
+# Internal project-context doc — kept locally, not published
+CLAUDE.md
