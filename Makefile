@@ -16,9 +16,13 @@ TESTS     := $(TEST_SRCS:.c=)
 BENCH_SRCS := $(wildcard bench/*.c)
 BENCHES   := $(BENCH_SRCS:.c=)
 
-# kbuf++ GoogleTest binaries (built only after `make gtest`).
+# kbuf++ GoogleTest binaries. third_party/ is produced by fetch-googletest.sh.
+# GTEST_INC is resolved lazily, and via $(shell) rather than $(wildcard): the
+# directory does not exist until the fetch rule has run, and make caches
+# $(wildcard) results for the whole process, so a parse-time glob would stay
+# empty even after the fetch. $(shell) re-globs at recipe-expansion time.
 GTEST_LIB := third_party/libgtest.a
-GTEST_INC := $(firstword $(wildcard third_party/googletest-*/googletest/include))
+GTEST_INC  = $(shell ls -d third_party/googletest-*/googletest/include 2>/dev/null | head -1)
 CPP_SRCS  := $(wildcard tests/*.cpp)
 CPP_TESTS := $(CPP_SRCS:.cpp=)
 
@@ -43,10 +47,14 @@ bench/%: bench/%.c
 	$(CC) $(CFLAGS) -o $@ $< -lm
 
 ## gtest: fetch + statically build GoogleTest into third_party/
-gtest:
+gtest: $(GTEST_LIB)
+
+# Real file target so the kbuf++ pattern rule below has a buildable
+# prerequisite (otherwise make discards the rule on a clean tree).
+$(GTEST_LIB):
 	./scripts/fetch-googletest.sh
 
-## cpp: build the kbuf++ GoogleTest binaries (run `make gtest` first)
+## cpp: build the kbuf++ GoogleTest binaries (fetches GoogleTest if needed)
 cpp: $(CPP_TESTS)
 
 tests/%: tests/%.cpp $(GTEST_LIB)

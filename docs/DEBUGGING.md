@@ -220,3 +220,38 @@ through the device mmap. This exercises *more* of the exporter (the whole
 attach/map/vmap path, not just `.mmap`) while keeping the console splat-free. The
 `.mmap` op stays implemented for real importers; the finding is recorded here so
 the next reader does not mistake the benign warning for an exporter bug.
+
+## 8. `make gtest cpp` passed locally but failed in CI ("No rule to make target")
+
+**Symptom.** The kbuf++ build (`make gtest cpp`) was green on the dev box but
+the first CI run failed the gating `static` job with
+`make: *** No rule to make target 'tests/test_kbufpp', needed by 'cpp'`. The
+`gtest` step had just printed `done: .../third_party/libgtest.a`, so GoogleTest
+*was* fetched — make simply refused to build the C++ test against it.
+
+**Investigation.** The difference between the two machines was state, not code:
+the dev box already had a populated `third_party/` from an earlier fetch; the CI
+runner started clean. Two parse-time decisions assumed `third_party/` already
+existed. (1) The pattern rule was `tests/%: tests/%.cpp $(GTEST_LIB)` with no
+rule that *produces* `$(GTEST_LIB)` — on a clean tree make sees an unsatisfiable
+prerequisite and discards the whole rule, hence "no rule to make target". (2)
+`GTEST_INC := $(firstword $(wildcard third_party/googletest-*/...))` was
+expanded immediately (`:=`) at parse, before the fetch, so it was empty. Making
+it recursive (`=`) was *still* not enough: GNU make caches `$(wildcard)`
+directory reads for the life of the process, so a glob that first ran while
+`third_party/` was absent keeps returning empty even after the fetch creates it
+— reproducible locally by `rm -rf third_party && make cpp` (the recipe expanded
+to `-I -static`, no include path).
+
+**Root cause.** The build depended on `third_party/` pre-existing: one missing
+file-rule, one premature `:=`, and one `$(wildcard)` whose result make had
+cached as empty. Local state hid all three; a clean checkout exposed them.
+
+**Fix.** Give `$(GTEST_LIB)` a real rule (`$(GTEST_LIB): ; ./scripts/fetch-googletest.sh`)
+so the pattern rule's prerequisite is buildable and `make cpp` fetches
+GoogleTest on demand; and compute the include dir with a lazily-expanded
+`$(shell ls -d ...)` instead of `$(wildcard)`, which re-globs at recipe time and
+is not subject to make's directory cache. Verified by `rm -rf third_party` then
+both `make cpp` and `make gtest cpp` from clean. Lesson: a build that assumes a
+fetched/cached directory already exists will pass locally and only break on the
+first clean runner — which is exactly what CI is for.
